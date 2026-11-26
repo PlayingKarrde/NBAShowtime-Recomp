@@ -1,0 +1,8 @@
+# Copyrighted game data and derived dumps — never commit
+rom/
+work/
+# Build and generated output
+build/
+out/
+# Recompiled game code is derived from the copyrighted binary — regenerate locally
+generated/
