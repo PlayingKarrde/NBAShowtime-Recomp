@@ -39,11 +39,19 @@ void add_function(Analysis& a, uint32_t addr, uint32_t src) {
 }  // namespace
 
 Analysis analyze(const Image& img, uint32_t entry, uint32_t text_end) {
-  Analysis a;
-  a.text_start = img.base;
-  a.text_end = std::min(text_end, img.end());
+  return analyze_section(img, img.base, text_end, {entry}, 0, 0);
+}
 
-  add_function(a, entry, SRC_ENTRY);
+Analysis analyze_section(const Image& img, uint32_t text_start, uint32_t text_end,
+                         const std::vector<uint32_t>& entries, uint32_t data_start,
+                         uint32_t data_end) {
+  Analysis a;
+  a.text_start = text_start;
+  a.text_end = std::min(text_end, img.end());
+  if (!data_start && !data_end) { data_start = a.text_end; data_end = img.end(); }
+
+  for (uint32_t e : entries)
+    if (in_text(a, e)) add_function(a, e, SRC_ENTRY);
 
   // Pass 1: linear sweep of text.
   std::vector<Insn> insns;
@@ -85,7 +93,7 @@ Analysis analyze(const Image& img, uint32_t entry, uint32_t text_end) {
   }
 
   // Pass 3: pointers into text from the data section.
-  for (uint32_t p = a.text_end & ~3u; p + 4 <= img.end(); p += 4) {
+  for (uint32_t p = data_start & ~3u; p + 4 <= std::min(data_end, img.end()); p += 4) {
     const uint32_t v = img.read32(p);
     if (!in_text(a, v)) continue;
     a.data_ptrs_into_text.insert(v);

@@ -36,6 +36,13 @@ uint64_t recomp_cop0_read(RecompContext* ctx, int reg, uint32_t pc);
 void recomp_cop0_write(RecompContext* ctx, int reg, uint64_t value, uint32_t pc);
 void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what);
 
+/* Vegas BIOS: dispatch syscall `code` the way the BIOS exception handler does
+   (handler address from the syscall table in guest RAM, called as a plain function).
+   Returns 0 if the table has no handler for `code`. */
+#define RECOMP_BIOS_SYSCALL_TABLE 0x8002B3C8u
+#define RECOMP_BIOS_SYSCALL_COUNT 104u
+int recomp_bios_syscall(RecompContext* ctx, uint32_t code);
+
 /* ---- integer helpers ---- */
 #define SE32(x) ((uint64_t)(int64_t)(int32_t)(uint32_t)(x))
 #define R32(n) ((uint32_t)ctx->r[n])

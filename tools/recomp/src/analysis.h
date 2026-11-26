@@ -39,5 +39,11 @@ struct Analysis {
 
 Analysis analyze(const Image& img, uint32_t entry, uint32_t text_end);
 
+// Analyze one code section [text_start, text_end) of a larger image. Data pointers into the
+// section are searched for in [data_start, data_end) (default: from text_end to image end).
+Analysis analyze_section(const Image& img, uint32_t text_start, uint32_t text_end,
+                         const std::vector<uint32_t>& entries, uint32_t data_start = 0,
+                         uint32_t data_end = 0);
+
 // Writes report.txt, functions.csv and game.s into out_dir.
 void write_outputs(const Image& img, const Analysis& a, const std::string& out_dir);

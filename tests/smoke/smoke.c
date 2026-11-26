@@ -44,11 +44,14 @@ void recomp_mmio_write(RecompContext* ctx, uint32_t a, uint32_t v, int size) {
   g_mmio_writes++;
   event("mmio write%-2d %08X <- %08X", size * 8, a, v);
 }
+static int g_trace_syscalls = 1;
+
 void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
   g_syscalls++;
-  event("syscall %3u @%08X  a0=%08X a1=%08X a2=%08X a3=%08X ra=%08X", code, pc, R32(4), R32(5),
-        R32(6), R32(7), R32(31));
-  if (code == 20 && R32(6) < 512) { /* looks like write(fd, buf, len): show the text */
+  if (g_trace_syscalls)
+    event("syscall %3u @%08X  a0=%08X a1=%08X a2=%08X a3=%08X ra=%08X", code, pc, R32(4), R32(5),
+          R32(6), R32(7), R32(31));
+  if (code == 20 && R32(6) < 512) { /* write(fd, buf, len): show the text */
     char buf[513];
     uint32_t n = R32(6), i;
     for (i = 0; i < n; ++i) {
@@ -57,10 +60,10 @@ void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
     }
     buf[n] = 0;
     printf("        text: \"%s\"\n", buf);
-    ctx->r[2] = SE32(n); /* bytes written */
-    return;
   }
-  ctx->r[2] = 0; /* v0 = 0 */
+  /* Run the recompiled BIOS handler. */
+  if (!recomp_bios_syscall(ctx, code)) event("syscall %u has no BIOS handler", code);
+  if (g_trace_syscalls) printf("        -> v0=%08X\n", R32(2));
 }
 void recomp_break(RecompContext* ctx, uint32_t code, uint32_t pc) {
   event("BREAK %u @%08X ra=%08X", code, pc, R32(31));

@@ -24,6 +24,14 @@ RecompFunc recomp_lookup(RecompContext* ctx, uint32_t vaddr) {
   return missing_function;
 }
 
+int recomp_bios_syscall(RecompContext* ctx, uint32_t code) {
+  if (code >= RECOMP_BIOS_SYSCALL_COUNT) return 0;
+  uint32_t handler = mem_r32(ctx, RECOMP_BIOS_SYSCALL_TABLE + code * 4);
+  if (!handler) return 0;
+  recomp_lookup(ctx, handler)(ctx);
+  return 1;
+}
+
 static double round_mode(double v, int mode) {
   switch (mode) {
     case 1: return trunc(v);

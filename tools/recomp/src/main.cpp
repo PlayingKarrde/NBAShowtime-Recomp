@@ -5,9 +5,13 @@
 //                     [--text-end 0x801e5e50] [--out out/analysis]
 //   nbarecomp disasm  <image.bin> <addr> [count] [--base 0x80100000]
 //   nbarecomp generate <image.bin> [--out generated]   (emit C for every function)
+//   nbarecomp generate-vegas <entry_ram.bin> [--out generated]
+//       recompile BIOS + game from a full 8 MB RAM snapshot (base 0x80000000)
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "analysis.h"
 #include "cfg.h"
@@ -22,7 +26,8 @@ static int usage() {
                "usage:\n"
                "  nbarecomp analyze <image.bin> [--base A] [--entry A] [--text-end A] [--out DIR]\n"
                "  nbarecomp disasm  <image.bin> <addr> [count] [--base A]\n"
-               "  nbarecomp generate <image.bin> [--base A] [--entry A] [--text-end A] [--out DIR]\n");
+               "  nbarecomp generate <image.bin> [--base A] [--entry A] [--text-end A] [--out DIR]\n"
+               "  nbarecomp generate-vegas <entry_ram.bin> [--out DIR]\n");
   return 2;
 }
 
@@ -57,6 +62,63 @@ int main(int argc, char** argv) {
                 a.jalr_sites.size(), a.jr_sites.size(), a.escaping_branches.size(),
                 a.external_calls.size());
     std::printf("wrote %s/{report.txt,functions.csv,game.s}\n", out.c_str());
+    return 0;
+  }
+  if (cmd == "generate-vegas") {
+    if (out == "out/analysis") out = "generated";
+    // Full RAM snapshot taken at the game's entry point (tools/mame/run_dump.sh).
+    if (!img.load(path, 0x80000000)) return 1;
+    constexpr uint32_t kBiosText = 0x80004000, kBiosTextEnd = 0x8001BAC0;  // strings follow
+    constexpr uint32_t kSyscallTable = 0x8002B3C8, kSyscallCount = 104;
+    constexpr uint32_t kGameText = 0x80100000, kGameTextEnd = 0x801E5E50, kGameDataEnd = 0x8035A470;
+
+    std::vector<uint32_t> bios_entries;
+    for (uint32_t n = 0; n < kSyscallCount; ++n)
+      if (uint32_t h = img.read32(kSyscallTable + 4 * n)) bios_entries.push_back(h);
+
+    struct Sec { const char* name; uint32_t start, end; std::vector<uint32_t> entries; uint32_t ds, de; };
+    const Sec secs[] = {
+        {"bios", kBiosText, kBiosTextEnd, bios_entries, kBiosTextEnd, kGameText},
+        {"game", kGameText, kGameTextEnd, {kGameText}, kGameTextEnd, kGameDataEnd},
+    };
+    Program all;
+    std::set<uint32_t> outside_calls;  // jal targets that land outside both code sections
+    auto in_any_text = [&](uint32_t t) {
+      for (const Sec& sc : secs) if (t >= sc.start && t < sc.end) return true;
+      return false;
+    };
+    for (const Sec& sc : secs) {
+      const Analysis a = analyze_section(img, sc.start, sc.end, sc.entries, sc.ds, sc.de);
+      for (const auto& [t, n] : a.external_calls)
+        if (!in_any_text(t) && img.contains(t, 4)) outside_calls.insert(t);
+      const Program p = build_program(img, a);
+      size_t jt = 0, unres = 0, stubs = 0;
+      for (const auto& [st, f] : p.funcs) {
+        jt += f.jump_tables.size();
+        unres += f.unresolved_jr.size();
+        stubs += f.syscall_stub;
+        for (const auto& w : f.warnings) std::fprintf(stderr, "%s func_%08X: %s\n", sc.name, st, w.c_str());
+      }
+      std::printf("%s: 0x%08x-0x%08x  %zu functions (%zu from analysis), %zu jump tables, %zu unresolved jr, "
+                  "%zu syscall stubs\n", sc.name, sc.start, sc.end, p.funcs.size(), a.functions.size(), jt,
+                  unres, stubs);
+      all.funcs.insert(p.funcs.begin(), p.funcs.end());
+    }
+    // Small routines kept in data sections (e.g. the CP0 Count helpers): recompile each block
+    // from the call target up to its first `jr ra` + delay slot.
+    for (uint32_t t : outside_calls) {
+      uint32_t end = t;
+      while (end < t + 256 && img.read32(end) != 0x03E00008) end += 4;
+      if (img.read32(end) != 0x03E00008) { std::fprintf(stderr, "no return after 0x%08x\n", t); continue; }
+      end += 8;
+      const Analysis a = analyze_section(img, t, end, {t}, t, t);
+      const Program p = build_program(img, a);
+      all.funcs.insert(p.funcs.begin(), p.funcs.end());
+      std::printf("data-resident routine: 0x%08x-0x%08x\n", t, end);
+    }
+    const CodegenStats st = generate_c(img, all, out);
+    std::printf("emitted %zu functions, %zu instructions into %zu files (%zu unhandled ops) -> %s/\n",
+                st.functions, st.instructions, st.files, st.unhandled_ops, out.c_str());
     return 0;
   }
   if (cmd == "generate") {
