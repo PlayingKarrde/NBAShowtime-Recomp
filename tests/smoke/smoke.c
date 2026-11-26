@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "../../runtime/src/ide.h"
+#include "../../runtime/src/ioasic.h"
 #include "recomp.h"
 #include "recomp_funcs.h"
 #include "vegas.h"
@@ -26,11 +27,14 @@ static void summary(const char* why) {
   char b[512];
   int n = snprintf(b, sizeof b,
                    "%s\nsummary: %ld events, %ld syscalls, %llu interrupts delivered, IDE: %llu cmds, "
-                   "%llu DMA, %llu sectors read, %llu written, virtual time %.3f s\n",
+                   "%llu DMA, %llu sectors read, %llu written, virtual time %.3f s\n"
+                   "sound board: %u words, %u uploads (%u PM + %u DM words), program %s\n",
                    why, g_events, g_syscalls, (unsigned long long)g_vegas.interrupts_delivered,
                    (unsigned long long)g_ide_stats.commands, (unsigned long long)g_ide_stats.dma_transfers,
                    (unsigned long long)g_ide_stats.sectors_read,
-                   (unsigned long long)g_ide_stats.sectors_written, g_vegas.cop0.cycles / 125e6);
+                   (unsigned long long)g_ide_stats.sectors_written, g_vegas.cop0.cycles / 125e6,
+                   g_dcs.words_received, g_dcs.uploads, g_dcs.pm_words, g_dcs.dm_words,
+                   g_dcs.running ? "running" : "not started");
   if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
 }
 

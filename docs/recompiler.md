@@ -62,12 +62,14 @@ controller and UART). See [hardware.md](hardware.md).
 - the game's console output appears over the emulated UART (about 800 UART interrupts delivered
   through the recompiled BIOS): environment variables, the welcome banner, the code CRC check, the
   stack check;
-- the game starts talking to the Midway I/O ASIC at 0xA4800000;
+- the Midway I/O ASIC (0xA4800000: control, select, inputs, DIP switches) is modelled. The DCS2 sound
+  boot monitor is exact against a MAME trace (`./build/ioasic_replay work/dumps/sound_trace.txt`), but the
+  game only boots the sound board after Glide init, so the smoke test doesn't reach it yet;
 - Glide probes the PCI memory windows (0xB0400000…0xB4000000) and VRC5074 +0x200 for the Voodoo
   Banshee, finds nothing, and the game halts in its Glide error handler.
 
-**Next:** the I/O ASIC (sound handshake, inputs, coin), then PCI configuration and the Banshee probe,
-which leads into the Glide replacement.
+**Next:** PCI configuration and the Banshee probe, which leads into the Glide replacement. After that:
+timers/vblank (IP3/IP4 sources), then real sound (ADSP-2104).
 
 Earlier run, with stub syscalls:
 Loads the MAME RAM and register snapshot and calls `func_80100000` (crt0) with stub hooks

@@ -26,9 +26,13 @@ if(GENERATED_SOURCES)
   # Guest float semantics: no FMA contraction (R5000 madd.s is unfused), no strict aliasing games.
   target_compile_options(game_recomp PRIVATE -ffp-contract=off -fno-strict-aliasing -Wno-unused-label -Wno-unused-parameter)
 
-  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c)
+  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c runtime/src/ioasic.c)
   target_include_directories(recomp_runtime PUBLIC runtime/include generated)
   target_compile_options(recomp_runtime PRIVATE -ffp-contract=off)
+
+  # Standalone: only the I/O ASIC model, no generated code.
+  add_executable(ioasic_replay tests/ioasic_replay/ioasic_replay.c runtime/src/ioasic.c)
+  target_include_directories(ioasic_replay PRIVATE runtime/include generated)
 
   add_executable(smoke tests/smoke/smoke.c)
   target_link_libraries(smoke PRIVATE recomp_runtime game_recomp recomp_runtime m)

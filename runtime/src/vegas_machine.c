@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "ide.h"
+#include "ioasic.h"
 #include "nile.h"
 #include "vegas.h"
 
@@ -32,6 +33,7 @@ int vegas_init(const char* disk_image, const char* nile_regs) {
   g_vegas.cop0.compare = 0xFFFFFFFFu;
   g_vegas.count_step = 2000;     /* 16 us of virtual time per Count read */
   nile_init(nile_regs);
+  ioasic_init();
   return ide_init(disk_image);
 }
 
@@ -145,6 +147,8 @@ uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
     v = ide_read(p, size);
   } else if (nile_handles(p)) {
     v = nile_read(p, size);
+  } else if (ioasic_handles(p)) {
+    v = ioasic_read(p, size);
   } else if (p == VEGAS_LED) {
     v = g_vegas_led;
   } else {
@@ -162,6 +166,8 @@ void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int s
     ide_write(ctx, p, value, size);
   } else if (nile_handles(p)) {
     nile_write(p, value, size);
+  } else if (ioasic_handles(p)) {
+    ioasic_write(p, value, size);
   } else if (p == VEGAS_LED) {
     g_vegas_led = (uint8_t)value; /* board diagnostic LED / 7-segment code */
   } else {
