@@ -61,7 +61,28 @@ static void dump_console_buffer(void) {
 }
 
 #ifdef RECOMP_TRACE_CALLS
-void recomp_break_hit(uint32_t addr) {
+static void summary(const char* why);
+/* WATCH_VERT=<virtual seconds>: at the first Glide vertex draw after that time, watch the first
+   vertex's X/Y and report the guest functions that write them. */
+void recomp_watch_hit(RecompContext* ctx, uint32_t addr, uint32_t value) {
+  (void)ctx;
+  static int hits;
+  float f;
+  memcpy(&f, &value, 4);
+  printf("watch %08X <- %08X (%g):", addr, value, f);
+  for (int k = 0; k < 6; ++k) printf(" %08X", recomp_call_ring[(recomp_call_pos - 1 - (uint32_t)k) & (RECOMP_CALL_RING - 1)]);
+  printf("\n");
+  if (++hits >= 40) { recomp_watch_len = 0; summary("-- watch done --"); _exit(0); }
+}
+void recomp_break_hit(RecompContext* ctx, uint32_t addr) {
+  if (getenv("WATCH_VERT")) {
+    if (g_vegas.cop0.cycles / 125e6 < atof(getenv("WATCH_VERT")) || recomp_watch_len) return;
+    const uint32_t vp = mem_r32(ctx, R32(5)); /* a1 = list of vertex pointers */
+    recomp_watch_lo = vp & 0x1FFFFFFFu;
+    recomp_watch_len = 8;
+    printf("watching vertex at %08X (x %08X)\n", vp, mem_r32(ctx, vp));
+    return;
+  }
   dcs2_debug_dump();
   printf("-- break at %08X --\n", addr);
   dump_call_trace(RECOMP_CALL_RING - 1);
@@ -124,6 +145,7 @@ static void summary(const char* why) {
                  (unsigned long long)g_v3d_stats.packets[2], (unsigned long long)g_v3d_stats.packets[3],
                  (unsigned long long)g_v3d_stats.packets[4], (unsigned long long)g_v3d_stats.packets[5]);
     if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+    if (getenv("V3D_CALLERS")) { extern void v3d_debug_callers(void); v3d_debug_callers(); }
     if (getenv("V3D_STATS")) {
       for (int f = 0; f < 16; ++f)
         if (g_v3d_stats.tex_format_tris[f]) printf("  textured tris, format %d: %llu\n", f, (unsigned long long)g_v3d_stats.tex_format_tris[f]);

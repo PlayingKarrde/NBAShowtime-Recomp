@@ -92,6 +92,20 @@ int main(int argc, char** argv) {
     constexpr uint32_t kProcSwitchInJr = 0x801B4760, kProcResume = 0x801B4764;
     all.proc_switch_in.insert(kProcSwitchInJr);
     all.proc_resume = kProcResume;
+    // Widescreen: the 3D polygon clipper (0x801A2C48) tests screen X against a literal 0; these
+    // sites use the runtime left edge instead (recomp_ws_xmin, 0 = original). See
+    // runtime/src/widescreen.c for the matching data patches of the right edge.
+    {
+      const std::string le_x_oow = "set_fcc(ctx, 0, fcmp(fpr_s(ctx, 0), recomp_ws_xmin * fpr_s(ctx, 2), 6));";
+      const std::string ge_x = "set_fcc(ctx, 0, fcmp(recomp_ws_xmin, fpr_s(ctx, 0), 6));";
+      all.insn_override[0x801A2CD0] = le_x_oow; /* all x*oow <= 0: reject (3 vertices) */
+      all.insn_override[0x801A2CE8] = le_x_oow;
+      all.insn_override[0x801A2D00] = le_x_oow;
+      all.insn_override[0x801A2E04] = ge_x;     /* trivial accept: 0 <= x (3 vertices) */
+      all.insn_override[0x801A2E4C] = ge_x;
+      all.insn_override[0x801A2E84] = ge_x;
+      all.insn_override[0x801A3128] = "mem_w32(ctx, R32(15), recomp_ws_xmin_bits());"; /* left clip edge */
+    }
     for (const Sec& sc : secs) {
       const Analysis a = analyze_section(img, sc.start, sc.end, sc.entries, sc.ds, sc.de);
       for (const auto& [t, n] : a.external_calls)

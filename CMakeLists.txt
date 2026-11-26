@@ -27,7 +27,7 @@ if(GENERATED_SOURCES)
   # Guest float semantics: no FMA contraction (R5000 madd.s is unfused), no strict aliasing games.
   target_compile_options(game_recomp PRIVATE -ffp-contract=off -fno-strict-aliasing -Wno-unused-label -Wno-unused-parameter)
 
-  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c runtime/src/ioasic.c runtime/src/pci.c runtime/src/banshee.c runtime/src/voodoo3d.c runtime/src/raster_sw.c runtime/src/voodoo_tex.c runtime/src/sio.c runtime/src/nvram.c runtime/src/proc.c runtime/src/adsp2100.c runtime/src/dcs2.c runtime/src/fpu.c)
+  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c runtime/src/ioasic.c runtime/src/pci.c runtime/src/banshee.c runtime/src/voodoo3d.c runtime/src/raster_sw.c runtime/src/voodoo_tex.c runtime/src/widescreen.c runtime/src/sio.c runtime/src/nvram.c runtime/src/proc.c runtime/src/adsp2100.c runtime/src/dcs2.c runtime/src/fpu.c)
   target_include_directories(recomp_runtime PUBLIC runtime/include generated)
   target_compile_options(recomp_runtime PRIVATE -ffp-contract=off)
 

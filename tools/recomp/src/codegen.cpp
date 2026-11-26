@@ -93,6 +93,7 @@ struct Gen {
 
   // Straight-line (non control flow) instruction.
   std::string simple(const Insn& i, uint32_t pc) {
+    if (auto ov = prog.insn_override.find(pc); ov != prog.insn_override.end()) return ov->second + " /* patched */";
     const uint32_t simm = uint32_t(int32_t(i.simm));
     switch (i.op) {
       // shifts

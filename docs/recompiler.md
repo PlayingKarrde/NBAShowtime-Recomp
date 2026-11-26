@@ -5,7 +5,7 @@
 Banshee output with OpenGL at any resolution and plays the DCS2 sound board's audio, paced to
 real time. Run it from the repository root after dumping the entry state:
 
-    ./build/nbashowtime [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
+    ./build/nbashowtime [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
 
 Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched.
 
@@ -24,6 +24,22 @@ F9 adds a service credit, F10 is the test switch, and - / = change the volume.
 writes frames for comparison with the software renderer. Frame 3600 at 2x matches it with a mean
 difference of 0.5/255, and about 0.4% of pixels differ visibly, all at triangle edges. Unthrottled,
 it runs about twice as fast as real time at 1280x960.
+
+## Widescreen
+`--aspect 16:9` (or 21:9, any ratio) uses "Hor+" widescreen. The game keeps its focal length, and
+the renderer shows game X from 256 - 192*aspect to 256 + 192*aspect, so the 3D view widens. The 2D
+HUD stays centred at its original proportions, and full-screen 2D menus are pillarboxed.
+
+The game normally drops anything outside its 512x384 screen, at two levels:
+- **Object bounding boxes** (801A0D18, 801A1008/801A1114) are tested against the screen. Their
+  centre and right-edge constants are data and are shifted at boot (`runtime/src/widescreen.c`).
+- **The per-triangle clipper** (801A2C48) rejects, trivially accepts and clips against x = 0 and
+  x = 512. Its 512s are data and patched at boot. Its 0s are instructions, which the recompiler
+  replaces through `Program::insn_override` (in `tools/recomp/src/main.cpp`) with code that reads
+  `recomp_ws_xmin`.
+
+At 4:3 every patch is neutral: the same run produces identical triangle counts. One known glitch:
+one HUD text element the game parks just off the left edge becomes visible.
 
 ## Build
 ```bash
@@ -65,6 +81,8 @@ at the moment the game's crt0 starts).
   `recomp_fpe_invalid`, which raise the exception through the recompiled BIOS handler the same way
   interrupts are delivered and take the destination value back from the frame. `ctc1 $31` goes through
   `recomp_set_fcsr`, which mirrors FS and the rounding mode into the host MXCSR (FTZ/DAZ, RC).
+- **Instruction overrides**: `Program::insn_override` maps a guest address to replacement C
+  (game patches that need runtime values); the emitted line is marked `/* patched */`.
 - **Not yet translated** (8 sites, all `recomp_unhandled`): 64-bit mul/div, ldl/ldr/sdl/sdr, and
   immediate traps. They probably all sit in strings or dead code.
 - All 18 generated files compile cleanly with gcc `-Wall -Wextra`. `-Wmisleading-indentation` caught a

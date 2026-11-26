@@ -3,6 +3,7 @@
 // documentation); the implementation is our own.
 #include "voodoo3d.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "banshee.h"
@@ -103,7 +104,32 @@ static void add_vertex(const V3dVertex* vert, int start, int fan) {
 }
 
 /* FIFO packet type 3: `data` points at the words after the header. Returns words consumed. */
+#ifdef RECOMP_TRACE_CALLS
+#include "recomp.h"
+/* debugging: which guest call paths emit vertex packets (V3D_CALLERS in the smoke test) */
+#define CALLER_SLOTS 64
+static struct { uint32_t f[4]; uint64_t n, verts; } callers[CALLER_SLOTS];
+void v3d_debug_callers(void) {
+  for (int i = 0; i < CALLER_SLOTS; ++i)
+    if (callers[i].n)
+      fprintf(stderr, "  %8llu packets %9llu verts: %08X <- %08X <- %08X <- %08X\n", (unsigned long long)callers[i].n,
+              (unsigned long long)callers[i].verts, callers[i].f[0], callers[i].f[1], callers[i].f[2], callers[i].f[3]);
+}
+static void note_caller(uint32_t nverts) {
+  uint32_t f[4];
+  for (int k = 0; k < 4; ++k) f[k] = recomp_call_ring[(recomp_call_pos - 1 - (uint32_t)k) & (RECOMP_CALL_RING - 1)];
+  for (int i = 0; i < CALLER_SLOTS; ++i) {
+    if (!callers[i].n) { memcpy(callers[i].f, f, sizeof f); }
+    if (!memcmp(callers[i].f, f, sizeof f)) { callers[i].n++; callers[i].verts += nverts; return; }
+  }
+}
+#else
+void v3d_debug_callers(void) {}
+#define note_caller(n) ((void)0)
+#endif
+
 uint32_t v3d_packet3(uint32_t cmd, const uint32_t* w) {
+  note_caller((cmd >> 6) & 15);
   const uint32_t count = (cmd >> 6) & 15, code = (cmd >> 3) & 7;
   const int fan = (cmd >> 22) & 1;
   v.reg[V3D_sSetupMode] = ((cmd >> 10) & 0xFF) | (((cmd >> 22) & 15) << 16);

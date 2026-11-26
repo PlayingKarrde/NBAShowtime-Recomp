@@ -33,6 +33,8 @@ struct Program {
   // Game process switching (see runtime/src/proc.c)
   std::set<uint32_t> proc_switch_in;  // `jr ra` sites where the scheduler resumes a process
   uint32_t proc_resume = 0;           // scheduler address that sleep/exit jump back to
+  // Per-instruction C replacements (game patches that need runtime values, e.g. widescreen).
+  std::map<uint32_t, std::string> insn_override;
 };
 
 // Builds CFGs for all functions found by `analyze`, discovering extra functions in

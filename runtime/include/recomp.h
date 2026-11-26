@@ -63,12 +63,18 @@ void recomp_proc_switch_out(RecompContext* ctx, uint32_t from);
 extern uint32_t recomp_call_ring[RECOMP_CALL_RING];
 extern uint32_t recomp_call_pos;
 extern uint32_t recomp_break_addr;     /* function address to stop at (0 = none) */
-void recomp_break_hit(uint32_t addr);  /* provided by the host */
+void recomp_break_hit(RecompContext* ctx, uint32_t addr); /* provided by the host */
+/* store watch (debugging): RAM writes to [recomp_watch_lo, +len) call recomp_watch_hit */
+extern uint32_t recomp_watch_lo, recomp_watch_len;
+void recomp_watch_hit(RecompContext* ctx, uint32_t addr, uint32_t value);
 #define RECOMP_ENTER(a) \
   do { recomp_call_ring[recomp_call_pos++ & (RECOMP_CALL_RING - 1)] = (a); \
-       if ((a) == recomp_break_addr) recomp_break_hit(a); } while (0)
+       if ((a) == recomp_break_addr) recomp_break_hit(ctx, a); } while (0)
+#define RECOMP_WATCH(p, v) \
+  do { if (__builtin_expect((p) - recomp_watch_lo < recomp_watch_len, 0)) recomp_watch_hit(ctx, p, v); } while (0)
 #else
 #define RECOMP_ENTER(a) ((void)0)
+#define RECOMP_WATCH(p, v) ((void)0)
 #endif
 
 /* ---- integer helpers ---- */
@@ -98,7 +104,7 @@ static inline uint64_t mem_r64(RecompContext* ctx, uint32_t a) {
 }
 static inline void mem_w32(RecompContext* ctx, uint32_t a, uint32_t v) {
   uint32_t p = recomp_phys(a);
-  if (p < RECOMP_RAM_SIZE) { memcpy(recomp_rdram + p, &v, 4); return; }
+  if (p < RECOMP_RAM_SIZE) { RECOMP_WATCH(p, v); memcpy(recomp_rdram + p, &v, 4); return; }
   recomp_mmio_write(ctx, a, v, 4);
 }
 static inline void mem_w16(RecompContext* ctx, uint32_t a, uint16_t v) {
@@ -194,6 +200,9 @@ int recomp_fpe_arith(RecompContext* ctx, uint32_t pc, int kind, double a, double
 int recomp_fpe_invalid(RecompContext* ctx, uint32_t pc);
 void recomp_set_fcsr(RecompContext* ctx, uint32_t v); /* ctc1 $31: also applies FS / RM to the host FPU */
 void recomp_fpu_host_sync(void);                      /* re-apply after a host context switch */
+/* widescreen left edge for patched game instructions (runtime/src/widescreen.c); 0 = original */
+extern float recomp_ws_xmin;
+static inline uint32_t recomp_ws_xmin_bits(void) { uint32_t b; memcpy(&b, &recomp_ws_xmin, 4); return b; }
 #define RECOMP_UNLIKELY(x) __builtin_expect(!!(x), 0)
 int64_t recomp_cvt_l(double v, int mode);
 

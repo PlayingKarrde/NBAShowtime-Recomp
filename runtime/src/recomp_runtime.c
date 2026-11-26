@@ -12,6 +12,7 @@ uint8_t* recomp_rdram;
 uint32_t recomp_call_ring[RECOMP_CALL_RING];
 uint32_t recomp_call_pos;
 uint32_t recomp_break_addr;
+uint32_t recomp_watch_lo, recomp_watch_len;
 #endif
 
 static void missing_function(RecompContext* ctx) {

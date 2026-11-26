@@ -40,11 +40,11 @@ static const char* kVS =
     "layout(location=1) in vec3 a_zw;\n" /* z, 1/w (depth), 1/w (TMU) */
     "layout(location=2) in vec4 a_col;\n"
     "layout(location=3) in vec2 a_st;\n"
-    "uniform float u_yorigin; uniform int u_flip;\n"
+    "uniform float u_yorigin; uniform int u_flip; uniform vec2 u_xrange;\n"
     "noperspective out vec4 v_col; noperspective out vec3 v_zw; noperspective out vec2 v_st;\n"
     "void main() {\n"
     "  float y = u_flip != 0 ? (u_yorigin + 1.0 - a_pos.y) : a_pos.y;\n"
-    "  gl_Position = vec4(a_pos.x / 256.0 - 1.0, 1.0 - y / 192.0, 0.0, 1.0);\n"
+    "  gl_Position = vec4((a_pos.x - u_xrange.x) * u_xrange.y - 1.0, 1.0 - y / 192.0, 0.0, 1.0);\n"
     "  v_col = a_col / 255.0; v_zw = a_zw; v_st = a_st;\n"
     "}\n";
 
@@ -157,8 +157,9 @@ typedef struct {
 static struct {
   int width, height; /* render target size */
   float scale;
+  float xmin, xmax; /* game X range shown (0..512 at 4:3; wider for widescreen) */
   GLuint prog, vao, vbo, fbo, blit_fbo;
-  GLint u_cp, u_fbz, u_am, u_tm, u_chroma, u_za, u_color0, u_color1, u_texsize, u_tex, u_sampler, u_yorigin, u_flip;
+  GLint u_xrange, u_cp, u_fbz, u_am, u_tm, u_chroma, u_za, u_color0, u_color1, u_texsize, u_tex, u_sampler, u_yorigin, u_flip;
   Target col[MAX_TARGETS], aux[MAX_TARGETS];
   TexEntry tex[TEX_CACHE];
   uint64_t use_clock;
@@ -225,13 +226,15 @@ static void set_scissor(const V3dState* st, int use_clip) {
     x0 = (float)((st->clipLeftRight >> 16) & 0x3FF); x1 = (float)(st->clipLeftRight & 0x3FF);
     y0 = (float)((st->clipLowYHighY >> 16) & 0x3FF); y1 = (float)(st->clipLowYHighY & 0x3FF);
   }
+  /* widescreen: a full-width clip window opens up to the whole widened view */
+  if (x0 <= 0 && x1 >= 512) { x0 = G.xmin; x1 = G.xmax; }
   if (st->fbzMode & (1u << 17)) { /* rows = yorigin + 1 - y */
     const float yo = (float)((banshee_io_reg(0x10) >> 18) & 0xFFF) + 1.0f;
     const float a = yo - y1, b = yo - y0;
     y0 = a; y1 = b;
   }
   /* GL window coordinates are bottom-up; our image row 0 is at the top (NDC +1). */
-  const int sx0 = (int)lroundf(x0 * G.scale), sx1 = (int)lroundf(x1 * G.scale);
+  const int sx0 = (int)lroundf((x0 - G.xmin) * G.scale), sx1 = (int)lroundf((x1 - G.xmin) * G.scale);
   const int top = (int)lroundf(y0 * G.scale), bot = (int)lroundf(y1 * G.scale);
   glEnable(GL_SCISSOR_TEST);
   glScissor(sx0, G.height - bot, sx1 > sx0 ? sx1 - sx0 : 0, bot > top ? bot - top : 0);
@@ -342,6 +345,7 @@ static void apply_state(const V3dState* st) {
   uniform_color(G.u_color1, st->color1);
   glUniform1f(G.u_yorigin, (float)((banshee_io_reg(0x10) >> 18) & 0xFFF));
   glUniform1i(G.u_flip, (fbz >> 17) & 1);
+  glUniform2f(G.u_xrange, G.xmin, 2.0f / (G.xmax - G.xmin));
   const int texturing = (st->fbzColorPath >> 27) & 1;
   glUniform1i(G.u_tex, texturing);
   if (texturing) {
@@ -436,10 +440,13 @@ static void gl_swap(void* user, uint32_t display_addr) {
   G.frame++;
 }
 
-int renderer_gl_init(float scale, RendererGlFrameFn fn, void* user) {
+int renderer_gl_init(float scale, float aspect, RendererGlFrameFn fn, void* user) {
   memset(&G, 0, sizeof G);
   G.scale = scale;
-  G.width = (int)lroundf(512 * scale);
+  if (aspect < 4.0f / 3.0f) aspect = 4.0f / 3.0f;
+  G.xmin = 256.0f - 192.0f * aspect;
+  G.xmax = 256.0f + 192.0f * aspect;
+  G.width = (int)lroundf((G.xmax - G.xmin) * scale);
   G.height = (int)lroundf(384 * scale);
   G.on_frame = fn;
   G.on_frame_user = user;
@@ -458,7 +465,7 @@ int renderer_gl_init(float scale, RendererGlFrameFn fn, void* user) {
     return -1;
   }
 #define U(n) G.u_##n = glGetUniformLocation(G.prog, "u_" #n)
-  U(cp); U(fbz); U(am); U(tm); U(chroma); U(za); U(color0); U(color1); U(texsize); U(tex); U(sampler); U(yorigin); U(flip);
+  U(xrange); U(cp); U(fbz); U(am); U(tm); U(chroma); U(za); U(color0); U(color1); U(texsize); U(tex); U(sampler); U(yorigin); U(flip);
 #undef U
   glGenVertexArrays(1, &G.vao);
   glBindVertexArray(G.vao);
