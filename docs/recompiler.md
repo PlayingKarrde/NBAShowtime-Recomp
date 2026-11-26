@@ -1,5 +1,18 @@
 # Recompiler — status and findings
 
+## Running the game
+`nbashowtime` (built when SDL3 development files are installed) opens a window, renders the
+Banshee output with OpenGL at any resolution and plays the DCS2 sound board's audio, paced to
+real time. Run it from the repository root after dumping the entry state:
+
+    ./build/nbashowtime [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
+
+Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched. Cabinet inputs are
+not wired yet. With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
+writes frames for comparison with the software renderer. Frame 3600 at 2x matches it with a mean
+difference of 0.5/255, and about 0.4% of pixels differ visibly, all at triangle edges. Unthrottled,
+it runs about twice as fast as real time at 1280x960.
+
 ## Build
 ```bash
 cmake -S . -B build -G Ninja && cmake --build build                       # builds nbarecomp
@@ -67,8 +80,8 @@ controller and UART). See [hardware.md](hardware.md).
 
 **Current state** (`SMOKE_SECONDS=300 ./build/smoke … 2000 --quiet`, about 780 s of virtual time):
 - Glide initialises the Banshee; its command FIFO is parsed and rendered by the software reference
-  renderer (attract mode, player intros and in-game play render correctly, also at 2x). A host GPU
-  renderer / window is next.
+  renderer (attract mode, player intros and in-game play render correctly, also at 2x), and by the
+  OpenGL renderer in the `nbashowtime` executable.
 - vblank, the BIOS tick, NVRAM, disk reads/writes and the process scheduler (about 960 processes created,
   560k switches) all work; the game keeps streaming from disk (about 1 M sectors), apparently looping
   its attract sequence.

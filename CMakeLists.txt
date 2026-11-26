@@ -27,7 +27,7 @@ if(GENERATED_SOURCES)
   # Guest float semantics: no FMA contraction (R5000 madd.s is unfused), no strict aliasing games.
   target_compile_options(game_recomp PRIVATE -ffp-contract=off -fno-strict-aliasing -Wno-unused-label -Wno-unused-parameter)
 
-  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c runtime/src/ioasic.c runtime/src/pci.c runtime/src/banshee.c runtime/src/voodoo3d.c runtime/src/raster_sw.c runtime/src/sio.c runtime/src/nvram.c runtime/src/proc.c runtime/src/adsp2100.c runtime/src/dcs2.c runtime/src/fpu.c)
+  add_library(recomp_runtime STATIC runtime/src/recomp_runtime.c runtime/src/vegas_machine.c runtime/src/ide.c runtime/src/nile.c runtime/src/ioasic.c runtime/src/pci.c runtime/src/banshee.c runtime/src/voodoo3d.c runtime/src/raster_sw.c runtime/src/voodoo_tex.c runtime/src/sio.c runtime/src/nvram.c runtime/src/proc.c runtime/src/adsp2100.c runtime/src/dcs2.c runtime/src/fpu.c)
   target_include_directories(recomp_runtime PUBLIC runtime/include generated)
   target_compile_options(recomp_runtime PRIVATE -ffp-contract=off)
 
@@ -44,4 +44,14 @@ if(GENERATED_SOURCES)
   add_executable(smoke tests/smoke/smoke.c)
   target_link_libraries(smoke PRIVATE recomp_runtime game_recomp recomp_runtime m)
   set_target_properties(smoke PROPERTIES ENABLE_EXPORTS ON) # symbol names in timeout backtraces
+
+  # The game itself: SDL3 window + OpenGL renderer + audio (needs SDL3 development files).
+  find_package(SDL3 CONFIG QUIET)
+  if(SDL3_FOUND)
+    add_executable(nbashowtime src/host/main.c src/host/renderer_gl.c)
+    target_include_directories(nbashowtime PRIVATE runtime/include generated)
+    target_link_libraries(nbashowtime PRIVATE recomp_runtime game_recomp recomp_runtime SDL3::SDL3 m)
+  else()
+    message(STATUS "SDL3 not found: the nbashowtime executable is not built")
+  endif()
 endif()

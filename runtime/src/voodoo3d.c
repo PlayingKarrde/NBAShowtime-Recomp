@@ -5,8 +5,11 @@
 
 #include <string.h>
 
+#include "banshee.h"
+
 V3dStats g_v3d_stats;
 uint32_t g_v3d_palette[256];
+uint32_t g_v3d_palette_version;
 
 static struct {
   uint32_t reg[V3D_REG_COUNT];
@@ -200,7 +203,7 @@ void v3d_reg_write(uint32_t regnum, uint32_t chipmask, uint32_t data) {
         v.fog_table[i + 1][0] = data >> 24;
       } else if (regnum >= V3D_nccTable + 4 && regnum < V3D_nccTable + 12 && (data & 0x80000000u)) {
         const uint32_t idx = (((data >> 24) & 0x7F) << 1) | ((regnum - V3D_nccTable) & 1);
-        g_v3d_palette[idx] = data & 0xFFFFFFu;
+        if (g_v3d_palette[idx] != (data & 0xFFFFFFu)) { g_v3d_palette[idx] = data & 0xFFFFFFu; g_v3d_palette_version++; }
       }
       break;
   }
@@ -216,6 +219,7 @@ void v3d_texture_write(uint32_t word_offset, uint32_t data) {
   const uint32_t base = v.reg[V3D_texBaseAddr] & 0xFFFFF0u;
   const uint32_t a = (base + word_offset * 4) & v.vram_mask & ~3u;
   memcpy(v.vram + a, &data, 4);
+  banshee_vram_touched(a);
   if (v.be.texture_written) v.be.texture_written(v.be.user, a, 4);
 }
 

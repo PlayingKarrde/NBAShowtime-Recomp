@@ -116,6 +116,7 @@ void v3d_lfb_write(uint32_t word_offset, uint32_t data, uint32_t mem_mask);
 
 /* palette for 8-bit palettised textures (written through nccTable when bit 31 is set) */
 extern uint32_t g_v3d_palette[256];
+extern uint32_t g_v3d_palette_version; /* bumped when an entry changes */
 
 typedef struct {
   uint64_t triangles, fastfills, swaps, texture_words, lfb_words, culled;

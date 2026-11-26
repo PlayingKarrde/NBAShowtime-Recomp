@@ -43,4 +43,13 @@ extern BansheeStats g_banshee_stats;
 
 extern uint8_t* g_banshee_vram;
 
+/* VRAM write tracking for texture caches: each 4 KB page records the global write stamp of its
+   last change. */
+#define BANSHEE_PAGE_SHIFT 12
+extern uint32_t g_vram_page_stamp[BANSHEE_VRAM_SIZE >> BANSHEE_PAGE_SHIFT];
+extern uint32_t g_vram_stamp;
+static inline void banshee_vram_touched(uint32_t off) {
+  g_vram_page_stamp[(off & (BANSHEE_VRAM_SIZE - 1)) >> BANSHEE_PAGE_SHIFT] = ++g_vram_stamp;
+}
+
 #endif

@@ -167,3 +167,12 @@ Facts used by the renderer:
 smoke test dumps frames with
 `FRAME_DUMP=dir [FRAME_START=n FRAME_EVERY=n FRAME_SCALE=s FRAME_MAX=n]`.
 
+The OpenGL renderer (`src/host/renderer_gl.c`) uses the same pipeline:
+- Triangles are batched while the state snapshot is unchanged.
+- A fragment shader implements texture and colour combine, chroma key, alpha test, and the Voodoo
+  W/Z depth values (written to `gl_FragDepth`). Attributes use `noperspective` interpolation, as on
+  the Voodoo, and textures are divided per fragment.
+- Fixed-function state handles blending, the depth function, write masks and scissor clipping.
+- Decoded textures are cached per mip chain. A cache entry is invalidated when any 4 KB VRAM page it
+  covers is written, which `banshee_vram_touched` tracks.
+

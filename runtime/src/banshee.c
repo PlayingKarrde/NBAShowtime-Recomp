@@ -10,6 +10,8 @@
 BansheeStats g_banshee_stats;
 static void fifo_reset(void);
 uint8_t* g_banshee_vram;
+uint32_t g_vram_page_stamp[BANSHEE_VRAM_SIZE >> BANSHEE_PAGE_SHIFT];
+uint32_t g_vram_stamp;
 
 /* BAR0 sub-ranges (byte offsets) */
 #define IOREG_END 0x100u        /* init / video registers */
@@ -180,7 +182,7 @@ static void execute_packet(uint32_t at, uint32_t cmd, uint32_t size) {
       switch (cmd >> 30) {
         case 0:
           for (uint32_t i = 0; i < count; ++i, ++target)
-            memcpy(g_banshee_vram + ((target * 4) & (BANSHEE_VRAM_SIZE - 1)), &w[1 + i], 4);
+          { memcpy(g_banshee_vram + ((target * 4) & (BANSHEE_VRAM_SIZE - 1)), &w[1 + i], 4); banshee_vram_touched(target * 4); }
           g_banshee_stats.vram_writes += count;
           break;
         case 2: for (uint32_t i = 0; i < count; ++i) v3d_lfb_write(target + i, w[1 + i], 0xFFFFFFFFu); break;
@@ -322,7 +324,7 @@ void banshee_mem_write(uint32_t a, uint32_t v, int size) {
   if (raw >= BANSHEE_VRAM_SIZE) g_banshee_stats.lfb3d_writes++;
   memcpy(g_banshee_vram + off, &v, (size_t)size);
   if (in_fifo(off)) fifo_word(off);
-  else g_banshee_stats.vram_writes++;
+  else { g_banshee_stats.vram_writes++; banshee_vram_touched(off); }
 }
 
 /* ---- I/O BAR ---- */
