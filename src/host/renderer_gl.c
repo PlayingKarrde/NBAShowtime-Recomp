@@ -167,6 +167,7 @@ static struct {
   int nverts, cap;
   V3dState batch_state;
   int batch_valid;
+  int batch_sprite; /* the batch holds 2D sprites (see is_sprite) */
   uint32_t display_addr;
   RendererGlFrameFn on_frame;
   void* on_frame_user;
@@ -226,8 +227,10 @@ static void set_scissor(const V3dState* st, int use_clip) {
     x0 = (float)((st->clipLeftRight >> 16) & 0x3FF); x1 = (float)(st->clipLeftRight & 0x3FF);
     y0 = (float)((st->clipLowYHighY >> 16) & 0x3FF); y1 = (float)(st->clipLowYHighY & 0x3FF);
   }
-  /* widescreen: a full-width clip window opens up to the whole widened view */
-  if (x0 <= 0 && x1 >= 512) { x0 = G.xmin; x1 = G.xmax; }
+  /* widescreen: a full-width clip window opens up to the whole widened view, except for 2D
+     sprites (HUD, text), which are laid out for the 4:3 screen: the game parks unused player
+     panels just outside it and relies on the clip window to hide them. */
+  if (x0 <= 0 && x1 >= 512 && !G.batch_sprite) { x0 = G.xmin; x1 = G.xmax; }
   if (st->fbzMode & (1u << 17)) { /* rows = yorigin + 1 - y */
     const float yo = (float)((banshee_io_reg(0x10) >> 18) & 0xFFF) + 1.0f;
     const float a = yo - y1, b = yo - y0;
@@ -388,10 +391,17 @@ static int same_state(const V3dState* a, const V3dState* b) {
   return memcmp(a, b, offsetof(V3dState, fog_table)) == 0;
 }
 
+/* 2D sprites (HUD, text) are drawn at fixed layer depths: the same 1/w on all three vertices and
+   much larger than any world geometry's (measured: sprites 1/18 .. 1/1.6, world <= 0.0112). */
+static int is_sprite(const V3dVertex v[3]) {
+  return v[0].wb == v[1].wb && v[1].wb == v[2].wb && v[0].wb >= 0.02f;
+}
+
 static void gl_triangle(void* user, const V3dState* st, const V3dVertex v[3]) {
   (void)user;
-  if (G.batch_valid && !same_state(st, &G.batch_state)) flush();
-  if (!G.batch_valid || G.nverts == 0) { G.batch_state = *st; G.batch_valid = 1; }
+  const int sprite = is_sprite(v);
+  if (G.batch_valid && (!same_state(st, &G.batch_state) || sprite != G.batch_sprite)) flush();
+  if (!G.batch_valid || G.nverts == 0) { G.batch_state = *st; G.batch_valid = 1; G.batch_sprite = sprite; }
   /* textures written since the batch began must not be used stale */
   if (G.nverts + 3 > G.cap) {
     G.cap = G.cap ? G.cap * 2 : 65536;
@@ -409,6 +419,7 @@ static void gl_fastfill(void* user, const V3dState* st) {
   (void)user;
   flush();
   bind_targets(st);
+  G.batch_sprite = 0;
   set_scissor(st, 1);
   const uint32_t fbz = st->fbzMode;
   GLbitfield mask = 0;

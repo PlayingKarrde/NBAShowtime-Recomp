@@ -38,8 +38,14 @@ The game normally drops anything outside its 512x384 screen, at two levels:
   replaces through `Program::insn_override` (in `tools/recomp/src/main.cpp`) with code that reads
   `recomp_ws_xmin`.
 
-At 4:3 every patch is neutral: the same run produces identical triangle counts. One known glitch:
-one HUD text element the game parks just off the left edge becomes visible.
+At 4:3 every patch is neutral: the same run produces identical triangle counts.
+
+2D sprites (HUD, text) are laid out for the 4:3 screen. The game parks unused player panels, such as
+a third "INSERT COINS", just outside it and relies on the clip window to hide them. In widescreen the
+renderer therefore keeps sprites inside the original 4:3 area. A triangle counts as a sprite when all
+three of its 1/w values are equal and at least 0.02. Sprites are drawn at fixed layer depths
+(measured 1/18 to 1/1.6), while world geometry stays at or below 0.0112. The raw Y of every
+triangle is bottom-up (lower-left origin), so screen row 0 is Y = 383.
 
 ## Build
 ```bash
