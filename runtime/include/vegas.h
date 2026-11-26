@@ -59,6 +59,9 @@ void vegas_advance(uint64_t cycles);
 
 /* Logging hook for unmapped MMIO and device diagnostics (default: stderr). */
 extern void (*vegas_log)(const char* fmt, ...);
+/* Called at every emulated vblank (57 Hz of virtual time, whether or not the game swaps
+   buffers): lets the host pace to real time, play audio and read input during loads too. */
+extern void (*vegas_vblank_hook)(void);
 
 #ifdef __cplusplus
 }

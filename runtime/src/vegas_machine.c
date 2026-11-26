@@ -23,6 +23,7 @@ static void default_log(const char* fmt, ...) {
   fputc('\n', stderr);
 }
 void (*vegas_log)(const char* fmt, ...) = default_log;
+void (*vegas_vblank_hook)(void);
 
 /* ---- BIOS exception path (found by disassembly, see docs/interrupts.md) ---- */
 #define BIOS_EXC_FRAME 0x8002B710u    /* register save area used by the exception entry */
@@ -64,8 +65,10 @@ void vegas_advance(uint64_t cycles) {
   if ((uint32_t)(g_vegas.cop0.compare - before) <= (uint32_t)(after - before) && after != before)
     vegas_set_irq(VEGAS_IRQ_TIMER, 1);
   nile_advance();
+  const uint64_t frames = sio_frames();
   sio_advance(g_vegas.cop0.cycles);
   dcs2_sync(g_vegas.cop0.cycles);
+  if (vegas_vblank_hook && sio_frames() != frames) vegas_vblank_hook();
 }
 
 static uint32_t cause_now(void) {

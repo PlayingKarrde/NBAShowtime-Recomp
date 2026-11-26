@@ -57,7 +57,16 @@ per IDE DMA command.
 ### IDE
 Standard ATA task file plus bus-master DMA (PRD table: {u32 address, u16 bytes (0 = 64 KB),
 bit 31 = end of table}). The BIOS uses READ DMA (C8) / WRITE DMA (CA) and waits for the completion
-interrupt. Status register reads acknowledge it. The model serves sectors from `work/nbashowt.img`;
+interrupt. Status register reads acknowledge it. The BIOS uses PIO instead (READ/WRITE MULTIPLE,
+C4/C5) for requests it flags as not DMA-able, such as some game saves and large streaming reads.
+PIO follows the ATA protocol:
+- data moves in blocks of the SET MULTIPLE size, which is 16 sectors (the BIOS sets it during boot
+  from 0x8003C92C, before the snapshot, so the model starts with it);
+- a read raises an interrupt when each block is ready;
+- a write starts with DRQ and no interrupt, then interrupts after every block and at the end.
+
+Interrupting per sector instead stalled the BIOS request queue (128 entries at 0x80029B70) at the
+"Tonight's Matchup" save. The model serves sectors from `work/nbashowt.img`;
 writes go to an in-memory overlay.
 
 ### Floating-point exceptions

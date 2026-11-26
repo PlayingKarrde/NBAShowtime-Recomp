@@ -3,7 +3,9 @@
 ## Running the game
 `nbashowtime` (built when SDL3 development files are installed) opens a window, renders the
 Banshee output with OpenGL at any resolution and plays the DCS2 sound board's audio, paced to
-real time. Run it from the repository root after dumping the entry state:
+real time. Pacing, audio and input run at every emulated vblank (`vegas_vblank_hook`), not just
+at buffer swaps, so loading screens are paced too, and at most about 80 ms of audio is queued.
+Run it from the repository root after dumping the entry state:
 
     ./build/nbashowtime [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
 
@@ -20,7 +22,9 @@ Gamepads are players 1-4 in connection order:
 - South = A, East = B, West or any shoulder/trigger = Turbo, Start = Start, Back = Coin.
 
 F9 adds a service credit, F10 is the test switch, and - / = change the volume.
-`NBA_PRESS=port:mask:from:to[,...]` scripts presses for tests (see `src/host/input.c`). With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
+`NBA_PRESS=port:mask:from:to[,...]` scripts presses for tests (see `src/host/input.c`).
+If the game stops swapping buffers for 10 s of game time, it prints a stall report: disk and sound
+counters, recent guest functions and a host stack trace. `NBA_STALL_EXIT=1` quits after the report. With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
 writes frames for comparison with the software renderer. Frame 3600 at 2x matches it with a mean
 difference of 0.5/255, and about 0.4% of pixels differ visibly, all at triangle edges. Unthrottled,
 it runs about twice as fast as real time at 1280x960.

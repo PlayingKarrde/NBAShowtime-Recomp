@@ -40,12 +40,15 @@ static struct {
   uint8_t command; /* last command (0 = none) */
   int irq;
 
-  /* PIO buffer */
-  uint8_t buf[SECTOR];
+  /* PIO: data moves in blocks (1 sector, or the SET MULTIPLE count for READ/WRITE MULTIPLE) */
+  uint8_t buf[256 * SECTOR];
   uint32_t buf_pos, buf_len;
-  uint32_t pio_sectors_left;
+  uint32_t pio_sectors_left; /* including the block in the buffer */
+  uint32_t pio_block;        /* sectors per block for the current command */
+  uint32_t blk_sectors;      /* sectors in the buffer */
   uint64_t pio_lba;
   int pio_write;
+  uint32_t multiple;         /* SET MULTIPLE MODE block size */
 
   /* DMA */
   int dma_pending; /* a DMA command waits for the bus master to start */
@@ -72,6 +75,9 @@ static uint32_t cur_count(void) { return ide.count ? ide.count : 256; }
 
 int ide_init(const char* path) {
   memset(&ide, 0, sizeof ide);
+  /* The BIOS sets the READ/WRITE MULTIPLE block size (SET MULTIPLE, count = word 0x8003C92C)
+     during boot, before the game snapshot is taken: start with that drive state. */
+  ide.multiple = 16;
   ide.img = fopen(path, "rb");
   if (!ide.img) {
     vegas_log("ide: cannot open disk image %s", path);
@@ -147,6 +153,7 @@ static void identify(void) {
   ide.buf_pos = 0;
   ide.buf_len = SECTOR;
   ide.pio_sectors_left = 0;
+  ide.pio_write = 0;
   ide.status = ST_DRDY | ST_DSC | ST_DRQ;
   set_irq(1);
 }
@@ -157,17 +164,40 @@ static void finish_command(int err) {
   set_irq(1);
 }
 
-/* PIO: load the next sector into the buffer for reads. */
-static void pio_next(void) {
-  if (!ide.pio_sectors_left) {
-    ide.status = ST_DRDY | ST_DSC;
-    return;
-  }
-  if (!ide.pio_write) read_sector(ide.pio_lba, ide.buf);
+/* PIO (ATA protocol): reads raise INTRQ when each block is ready; writes start with DRQ and no
+   interrupt, then interrupt after each block (DRQ set again while sectors remain) and at the end. */
+static void pio_block(void) {
+  ide.blk_sectors = ide.pio_sectors_left < ide.pio_block ? ide.pio_sectors_left : ide.pio_block;
+  if (!ide.pio_write)
+    for (uint32_t i = 0; i < ide.blk_sectors; ++i) read_sector(ide.pio_lba + i, ide.buf + i * SECTOR);
   ide.buf_pos = 0;
-  ide.buf_len = SECTOR;
+  ide.buf_len = ide.blk_sectors * SECTOR;
   ide.status = ST_DRDY | ST_DSC | ST_DRQ;
-  if (!ide.pio_write) set_irq(1);
+}
+
+static void pio_start(int write, uint32_t block) {
+  ide.pio_lba = cur_lba();
+  ide.pio_sectors_left = cur_count();
+  ide.pio_write = write;
+  ide.pio_block = block ? (block > 256 ? 256 : block) : 1;
+  pio_block();
+  if (!write) set_irq(1);
+}
+
+/* the buffered block has been transferred */
+static void pio_block_done(void) {
+  if (ide.pio_write)
+    for (uint32_t i = 0; i < ide.blk_sectors; ++i) write_sector(ide.pio_lba + i, ide.buf + i * SECTOR);
+  ide.pio_lba += ide.blk_sectors;
+  ide.pio_sectors_left -= ide.blk_sectors;
+  set_lba(ide.pio_lba);
+  if (ide.pio_sectors_left) {
+    pio_block();
+    set_irq(1);
+  } else {
+    ide.status = ST_DRDY | ST_DSC;
+    if (ide.pio_write) set_irq(1);
+  }
 }
 
 /* Bus-master DMA transfer for the pending READ/WRITE DMA command. */
@@ -222,20 +252,20 @@ static void execute(RecompContext* ctx, uint8_t cmd) {
   g_ide_stats.commands++;
   switch (cmd) {
     case 0xEC: identify(); break;
-    case 0x20: case 0x21: case 0xC4: /* READ SECTORS / READ MULTIPLE */
-      ide.pio_lba = cur_lba(); ide.pio_sectors_left = cur_count(); ide.pio_write = 0;
-      pio_next();
-      break;
-    case 0x30: case 0x31: case 0xC5: /* WRITE SECTORS / WRITE MULTIPLE */
-      ide.pio_lba = cur_lba(); ide.pio_sectors_left = cur_count(); ide.pio_write = 1;
-      pio_next();
+    case 0x20: case 0x21: pio_start(0, 1); break;            /* READ SECTORS */
+    case 0xC4: pio_start(0, ide.multiple); break;            /* READ MULTIPLE */
+    case 0x30: case 0x31: pio_start(1, 1); break;            /* WRITE SECTORS */
+    case 0xC5: pio_start(1, ide.multiple); break;            /* WRITE MULTIPLE */
+    case 0xC6:                                               /* SET MULTIPLE MODE */
+      ide.multiple = ide.count;
+      finish_command(0);
       break;
     case 0xC8: case 0xC9: case 0xCA: case 0xCB: /* READ/WRITE DMA */
       ide.dma_pending = 1;
       ide.status = ST_DRDY | ST_DSC | ST_DRQ;
       if (ide.bm_cmd & BM_CMD_START) run_dma(ctx);
       break;
-    case 0x10: case 0x91: case 0xEF: case 0xC6: case 0xE0: case 0xE1: case 0xE2: case 0xE3:
+    case 0x10: case 0x91: case 0xEF: case 0xE0: case 0xE1: case 0xE2: case 0xE3:
     case 0xE5: case 0xE6: case 0xE7: case 0x40: case 0x70:
       finish_command(0); /* recalibrate, init params, set features, set multiple, power, verify, seek */
       break;
@@ -249,30 +279,17 @@ static void execute(RecompContext* ctx, uint8_t cmd) {
 static uint32_t data_read(int size) {
   uint32_t v = 0;
   for (int i = 0; i < size && ide.buf_pos < ide.buf_len; ++i) v |= (uint32_t)ide.buf[ide.buf_pos++] << (8 * i);
-  if (ide.buf_pos >= ide.buf_len && (ide.status & ST_DRQ)) {
-    if (ide.pio_sectors_left) {
-      ide.pio_sectors_left--;
-      ide.pio_lba++;
-      set_lba(ide.pio_lba);
-      pio_next();
-    } else {
-      ide.status = ST_DRDY | ST_DSC;
-    }
+  if (ide.buf_pos >= ide.buf_len && (ide.status & ST_DRQ) && !ide.pio_write) {
+    if (ide.pio_sectors_left) pio_block_done();
+    else ide.status = ST_DRDY | ST_DSC; /* IDENTIFY */
   }
   return v;
 }
 
 static void data_write(uint32_t v, int size) {
-  for (int i = 0; i < size && ide.buf_pos < SECTOR; ++i) ide.buf[ide.buf_pos++] = (uint8_t)(v >> (8 * i));
-  if (ide.buf_pos >= SECTOR && ide.pio_write && ide.pio_sectors_left) {
-    write_sector(ide.pio_lba++, ide.buf);
-    set_lba(ide.pio_lba);
-    ide.pio_sectors_left--;
-    ide.buf_pos = 0;
-    if (ide.pio_sectors_left) ide.status = ST_DRDY | ST_DSC | ST_DRQ;
-    else { ide.status = ST_DRDY | ST_DSC; }
-    set_irq(1);
-  }
+  if (!ide.pio_write || !(ide.status & ST_DRQ)) return;
+  for (int i = 0; i < size && ide.buf_pos < ide.buf_len; ++i) ide.buf[ide.buf_pos++] = (uint8_t)(v >> (8 * i));
+  if (ide.buf_pos >= ide.buf_len) pio_block_done();
 }
 
 int ide_handles(uint32_t p) { return p >= IDE_TASKFILE && p < IDE_BUSMASTER + 8; }

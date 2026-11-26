@@ -51,6 +51,7 @@ if(GENERATED_SOURCES)
     add_executable(nbashowtime src/host/main.c src/host/renderer_gl.c src/host/input.c)
     target_include_directories(nbashowtime PRIVATE runtime/include generated)
     target_link_libraries(nbashowtime PRIVATE recomp_runtime game_recomp recomp_runtime SDL3::SDL3 m)
+    set_target_properties(nbashowtime PROPERTIES ENABLE_EXPORTS ON) # symbol names in stall reports
   else()
     message(STATUS "SDL3 not found: the nbashowtime executable is not built")
   endif()

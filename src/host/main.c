@@ -16,6 +16,9 @@
 //   --dump DIR     write rendered frames as PNG (with --dump-every N, --dump-start N)
 //   --frames N     quit after N frames; --hidden: no visible window (testing)
 #include <stdarg.h>
+#if defined(__linux__)
+#include <execinfo.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +26,7 @@
 #include <SDL3/SDL.h>
 
 #include "../../runtime/src/dcs2.h"
+#include "../../runtime/src/ide.h"
 #include "../../runtime/src/raster_sw.h"
 #include "../../runtime/src/widescreen.h"
 #include "gl_funcs.h"
@@ -38,6 +42,7 @@ static struct {
   SDL_AudioStream* audio;
   int stretch, throttle, verbose;
   float aspect; /* render aspect ratio */
+  uint64_t frame; /* buffer swaps so far */
   const char* dump_dir;
   uint64_t dump_every, dump_start, max_frames;
   uint64_t wall_base_ns;
@@ -90,11 +95,14 @@ void recomp_watch_hit(RecompContext* ctx, uint32_t addr, uint32_t value) { (void
 #endif
 
 /* ---- per frame (called from the game's buffer swap) ---- */
+/* Keep at most ~80 ms of audio queued: anything beyond that would only add latency (e.g. audio
+   produced while the emulation briefly ran ahead), so it is dropped. */
 static void pump_audio(void) {
-  if (!H.audio) return;
   int16_t buf[4096 * 2];
   int n;
-  while ((n = dcs2_audio_read(buf, 4096)) > 0) SDL_PutAudioStreamData(H.audio, buf, n * 4);
+  const int max_queued = dcs2_audio_rate() * 4 * 80 / 1000;
+  while ((n = dcs2_audio_read(buf, 4096)) > 0)
+    if (H.audio && SDL_GetAudioStreamQueued(H.audio) < max_queued) SDL_PutAudioStreamData(H.audio, buf, n * 4);
 }
 
 static void handle_events(void) {
@@ -154,9 +162,39 @@ static void on_frame(void* user, uint64_t frame) {
             (unsigned long long)s->texture_uploads, g_vegas.cop0.cycles / 125e6);
     quit(0);
   }
+  H.frame = frame + 1;
+}
+
+/* Every emulated vblank, also during loading screens where the game does not swap buffers. */
+static void stall_report(void) {
+  fprintf(stderr, "-- no buffer swap for 10 s of game time (virtual %.1f s, swaps %llu) --\n",
+          g_vegas.cop0.cycles / 125e6, (unsigned long long)H.frame);
+  fprintf(stderr, "IDE: %llu commands, %llu sectors read; DCS2: %llu host words in, %llu replies out\n",
+          (unsigned long long)g_ide_stats.commands, (unsigned long long)g_ide_stats.sectors_read,
+          (unsigned long long)g_dcs2_stats.host_writes, (unsigned long long)g_dcs2_stats.output_writes);
+#ifdef RECOMP_TRACE_CALLS
+  fprintf(stderr, "recent guest functions (newest first):");
+  for (int k = 0; k < 96; ++k) fprintf(stderr, "%s%08X", k % 12 ? " " : "\n  ", recomp_call_ring[(recomp_call_pos - 1 - (uint32_t)k) & (RECOMP_CALL_RING - 1)]);
+  fprintf(stderr, "\n");
+#endif
+#if defined(__linux__)
+  {
+    /* host stack: the generated func_XXXXXXXX frames show where the game is waiting */
+    void* frames[64];
+    const int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, 2);
+  }
+#endif
+  if (getenv("NBA_STALL_EXIT")) quit(5);
+}
+
+static void on_vblank(void) {
+  static uint64_t last_swap_frame, vblanks_since;
+  if (H.frame != last_swap_frame) { last_swap_frame = H.frame; vblanks_since = 0; }
+  else if (++vblanks_since == 570) stall_report();
   pump_audio();
   handle_events();
-  input_update(frame);
+  input_update(H.frame);
   if (H.throttle) pace();
 }
 
@@ -247,6 +285,10 @@ int main(int argc, char** argv) {
   if (!H.dump_every) H.dump_every = 1;
 
   vegas_log = quiet_log;
+  {
+    extern int ide_trace;
+    ide_trace = getenv("TRACE_IDE") != NULL; /* with --verbose */
+  }
   RecompContext ctx;
   {
     /* the VRC5074 / SIO dumps live next to the register JSON */
@@ -297,6 +339,7 @@ int main(int argc, char** argv) {
     else fprintf(stderr, "no audio: %s\n", SDL_GetError());
   }
   input_init();
+  vegas_vblank_hook = on_vblank;
   H.wall_base_ns = SDL_GetTicksNS();
   H.virt_base = g_vegas.cop0.cycles / 125e6;
 
