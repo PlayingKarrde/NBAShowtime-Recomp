@@ -1,6 +1,7 @@
 // Vegas machine core: CP0, interrupt delivery into the recompiled BIOS, MMIO routing.
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "banshee.h"
@@ -57,7 +58,11 @@ static uint32_t count_now(void) {
   return (uint32_t)(g_vegas.cop0.cycles - g_vegas.cop0.count_base_cycles) + g_vegas.cop0.count_base;
 }
 
+uint64_t g_vtime[VT_COUNT]; /* virtual time by cause (diagnostics) */
+static int g_vt_cause = VT_INSN;
+
 void vegas_advance(uint64_t cycles) {
+  g_vtime[g_vt_cause] += cycles;
   uint32_t before = count_now();
   g_vegas.cop0.cycles += cycles;
   uint32_t after = count_now();
@@ -121,6 +126,7 @@ int32_t recomp_budget = SLICE_INSTRUCTIONS;
 void recomp_slice(RecompContext* ctx) {
   const int32_t used = SLICE_INSTRUCTIONS - recomp_budget;
   recomp_budget = SLICE_INSTRUCTIONS;
+  g_vt_cause = VT_INSN;
   vegas_advance((uint64_t)used / 2); /* ~1 instruction per CPU cycle; Count runs at half speed */
   vegas_poll_interrupts(ctx);
 }
@@ -130,6 +136,7 @@ uint64_t recomp_cop0_read(RecompContext* ctx, int reg, uint32_t pc) {
   (void)pc;
   switch (reg) {
     case 9:
+      g_vt_cause = VT_COUNT_READ;
       vegas_advance(g_vegas.count_step);
       vegas_poll_interrupts(ctx);
       return SE32(count_now());
@@ -166,12 +173,27 @@ void recomp_cop0_write(RecompContext* ctx, int reg, uint64_t value, uint32_t pc)
 }
 
 /* ---- physical address map ---- */
+/* Bus time of one access, in Count units (8 ns). The I/O ASIC sits on the slow peripheral bus;
+   its access time matters for the sound board handshake: after a bank load the DSP replies
+   with a checksum and only re-enables its command interrupt vector a few microseconds later,
+   so a host that answers in a few nanoseconds sends its next command into that window and the
+   command is lost (no gameplay sound). */
+#define MMIO_COST 4
+#define IOASIC_COST 64 /* ~0.5 us */
 #define VEGAS_LED 0x04600000u
 static uint8_t g_vegas_led;
+
+static int vt_device(uint32_t p) {
+  if (ide_handles(p)) return VT_IDE;
+  if (banshee_io_handles(p)) return VT_BANSHEE;
+  if (ioasic_handles(p)) return VT_IOASIC;
+  return VT_MMIO_OTHER;
+}
 
 uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
   const uint32_t p = recomp_phys(vaddr);
   uint32_t v;
+  g_vt_cause = vt_device(p);
   if (pci_handles(p)) {
     v = pci_read(p, size);
   } else if (ide_handles(p)) {
@@ -181,6 +203,7 @@ uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
   } else if (nile_handles(p)) {
     v = nile_read(p, size);
   } else if (ioasic_handles(p)) {
+    vegas_advance(IOASIC_COST - MMIO_COST);
     v = ioasic_read(p, size);
   } else if (sio_handles(p)) {
     v = sio_read(p, size);
@@ -192,13 +215,14 @@ uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
     vegas_log("mmio: unmapped read%d %08X", size * 8, vaddr);
     v = 0;
   }
-  vegas_advance(4);
+  vegas_advance(MMIO_COST);
   vegas_poll_interrupts(ctx);
   return v;
 }
 
 void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int size) {
   const uint32_t p = recomp_phys(vaddr);
+  g_vt_cause = vt_device(p);
   if (pci_handles(p)) {
     pci_write(p, value, size);
   } else if (ide_handles(p)) {
@@ -208,6 +232,7 @@ void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int s
   } else if (nile_handles(p)) {
     nile_write(p, value, size);
   } else if (ioasic_handles(p)) {
+    vegas_advance(IOASIC_COST - MMIO_COST);
     ioasic_write(p, value, size);
   } else if (sio_handles(p)) {
     sio_write(p, value, size);
@@ -218,5 +243,5 @@ void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int s
   } else {
     vegas_log("mmio: unmapped write%d %08X <- %08X", size * 8, vaddr, value);
   }
-  vegas_advance(4);
+  vegas_advance(MMIO_COST);
 }

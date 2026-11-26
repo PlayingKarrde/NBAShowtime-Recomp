@@ -29,6 +29,7 @@ typedef void(APIENTRYP PFNGLPIXELSTOREIPROC)(GLenum pname, GLint param);
 typedef void(APIENTRYP PFNGLREADPIXELSPROC)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
                                            GLenum type, void* pixels);
 typedef const GLubyte*(APIENTRYP PFNGLGETSTRINGPROC)(GLenum name);
+typedef void(APIENTRYP PFNGLFINISHPROC)(void);
 
 #define NBA_GL_FUNCS(X)                                                                          \
   X(PFNGLGENBUFFERSPROC, glGenBuffers)                                                           \
@@ -82,7 +83,8 @@ typedef const GLubyte*(APIENTRYP PFNGLGETSTRINGPROC)(GLenum name);
   X(PFNGLGETERRORPROC, glGetError)                                                               \
   X(PFNGLPIXELSTOREIPROC, glPixelStorei)                                                         \
   X(PFNGLREADPIXELSPROC, glReadPixels)                                                           \
-  X(PFNGLGETSTRINGPROC, glGetString)
+  X(PFNGLGETSTRINGPROC, glGetString)                                                             \
+  X(PFNGLFINISHPROC, glFinish)
 
 #define NBA_GL_DECLARE(type, name) extern type nba_##name;
 NBA_GL_FUNCS(NBA_GL_DECLARE)
@@ -141,6 +143,7 @@ NBA_GL_FUNCS(NBA_GL_DECLARE)
 #define glPixelStorei nba_glPixelStorei
 #define glReadPixels nba_glReadPixels
 #define glGetString nba_glGetString
+#define glFinish nba_glFinish
 
 /* Returns 0 on success, or -1 naming the first missing function. */
 int nba_gl_load(void);

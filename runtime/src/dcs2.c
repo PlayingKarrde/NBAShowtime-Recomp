@@ -18,7 +18,9 @@ enum {
 
 #define AUDIO_RING (1 << 16) /* stereo frames */
 
-static int g_trace_cmd = -1;   /* debug: log instructions after the host writes this value */
+static int g_log_io; /* debug: DCS_LOG_IO logs latch traffic */
+static int g_trace_cmd = -1;
+static uint64_t g_trace_after; /* DCS_TRACE_AFTER: only trigger after this DSP cycle */   /* debug: log instructions after the host writes this value */
 static int g_trace_left;
 
 static struct {
@@ -179,7 +181,9 @@ static uint16_t dm_read(void* u, uint16_t a) {
   if (a >= 0x3FE0) return d.ctrl[a - 0x3FE0];
   if (a >= 0x3800 && a < 0x3A00) return d.idm[a - 0x3800];
   switch (a) {
-    case 0x0400: return d.input_data;
+    case 0x0400:
+      if (g_log_io) printf("dcs2 @%llu: DSP reads input %04X (pc %04X)\n", (unsigned long long)d.dsp_cycles, d.input_data, d.cpu.pc);
+      return d.input_data;
     case 0x0402: d.output_control_read = d.dsp_cycles; return d.output_control;
     case 0x0403: return (uint16_t)((d.input_full ? 0x80 : 0) | (d.output_full ? 0 : 0x40) | 0x08 /* FIFO empty */);
     case 0x0404: case 0x0405: case 0x0406: case 0x0407: return 0xFFFF; /* FIFO: not used */
@@ -197,10 +201,12 @@ static void dm_write(void* u, uint16_t a, uint16_t v) {
   if (a >= 0x3800 && a < 0x3A00) { d.idm[a - 0x3800] = v; return; }
   switch (a) {
     case 0x0400: /* acknowledge the input latch */
+      if (g_log_io) printf("dcs2 @%llu: DSP acks input (pc %04X)\n", (unsigned long long)d.dsp_cycles, d.cpu.pc);
       d.input_full = 0;
       adsp_set_irq_line(&d.cpu, ADSP_IRQ2, 0);
       break;
     case 0x0401:
+      if (g_log_io) printf("dcs2 @%llu: DSP replies %04X (pc %04X)\n", (unsigned long long)d.dsp_cycles, v, d.cpu.pc);
       d.output_data = v;
       d.output_full = 1;
       g_dcs2_stats.output_writes++;
@@ -228,7 +234,10 @@ static uint32_t pm_read(void* u, uint16_t a) {
 
 static void pm_write(void* u, uint16_t a, uint32_t v) {
   (void)u;
-  if (a < 0x0200) d.ipm[a] = v;
+  if (a < 0x0200) {
+    if (g_log_io && a < 0x30 && d.ipm[a] != v) printf("dcs2 @%llu: PM %04X <- %06X (pc %04X)\n", (unsigned long long)d.dsp_cycles, a, v, d.cpu.pc);
+    d.ipm[a] = v;
+  }
   else if (a >= 0x0800 && SDRC_SM_EN) d.pm_sram[a - 0x0800] = v;
 }
 
@@ -321,7 +330,7 @@ static void run_cycles(uint64_t target) {
       if (!d.in_reset && g_trace_left) { /* debug: single-step with logging */
         for (int k = 0; k < n && g_trace_left; ++k, --g_trace_left) {
           const uint32_t op = pm_read(NULL, d.cpu.pc);
-          printf("dsp %04X: %06X  AX0=%04X AR=%04X I5=%04X\n", d.cpu.pc, op, d.cpu.r[0], d.cpu.r[10], d.cpu.i[5]);
+          printf("dsp %04X: %06X  AX0=%04X AR=%04X imask=%02X icntl=%02X l2=%d/%d full=%d\n", d.cpu.pc, op, d.cpu.r[0], d.cpu.r[10], d.cpu.imask, d.cpu.icntl, d.cpu.irq_latch[0], d.cpu.irq_line[0], d.input_full);
           adsp_run(&d.cpu, 1);
           d.dsp_cycles++;
           g_dcs2_stats.instructions++;
@@ -388,9 +397,10 @@ void dcs2_reset_line(int run, uint64_t now) {
 void dcs2_data_w(uint16_t v, uint64_t now) {
   if (!d.present) return;
   dcs2_sync(now);
+  if (g_log_io) printf("dcs2 @%llu: host writes %04X (full %d, pc %04X imask %02X latch %d)\n", (unsigned long long)d.dsp_cycles, v, d.input_full, d.cpu.pc, d.cpu.imask, d.cpu.irq_latch[0]);
   d.input_data = v;
   d.input_full = 1;
-  if (g_trace_cmd >= 0 && v == (uint16_t)g_trace_cmd && !g_trace_left) g_trace_left = 20000;
+  if (g_trace_cmd >= 0 && v == (uint16_t)g_trace_cmd && !g_trace_left && d.dsp_cycles >= g_trace_after) g_trace_left = 20000;
   adsp_set_irq_line(&d.cpu, ADSP_IRQ2, 1);
   g_dcs2_stats.host_writes++;
 }
@@ -399,6 +409,7 @@ uint16_t dcs2_data_r(uint64_t now) {
   if (!d.present) return 0;
   dcs2_sync(now);
   g_dcs2_stats.host_reads++;
+  if (g_log_io) printf("dcs2 @%llu: host reads reply %04X\n", (unsigned long long)d.dsp_cycles, d.output_data);
   return d.output_data;
 }
 
@@ -482,6 +493,8 @@ int dcs2_init(const char* bootrom_path) {
   d.cpu.pm_write = pm_write;
   d.cpu.mstat_changed = mstat_changed;
   d.cpu.trace_on = getenv("DCS_TRACE") != NULL;
+  g_log_io = getenv("DCS_LOG_IO") != NULL;
+  if (getenv("DCS_TRACE_AFTER")) g_trace_after = strtoull(getenv("DCS_TRACE_AFTER"), NULL, 0);
   if (getenv("DCS_TRACE_ON_CMD")) g_trace_cmd = (int)strtol(getenv("DCS_TRACE_ON_CMD"), NULL, 16);
   d.present = 1;
   d.in_reset = 1; /* held in reset until the host releases it */

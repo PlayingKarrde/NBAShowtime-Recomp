@@ -56,6 +56,8 @@ void vegas_poll_interrupts(RecompContext* ctx);
 
 /* Advance virtual time. */
 void vegas_advance(uint64_t cycles);
+enum { VT_INSN, VT_COUNT_READ, VT_IDE, VT_BANSHEE, VT_IOASIC, VT_MMIO_OTHER, VT_COUNT };
+extern uint64_t g_vtime[VT_COUNT]; /* virtual time spent by cause */
 
 /* Logging hook for unmapped MMIO and device diagnostics (default: stderr). */
 extern void (*vegas_log)(const char* fmt, ...);

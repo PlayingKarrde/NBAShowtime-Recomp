@@ -40,7 +40,7 @@ typedef struct {
 static struct {
   SDL_Gamepad* pads[4];
   Player kb[4], pad[4];
-  Press script[16];
+  Press script[128];
   int nscript;
 } I;
 
@@ -51,7 +51,7 @@ void input_init(void) {
      3 = player 1 stick with 1/2/4/8 = up/down/left/right)
      during a frame range: lets tests drive the game without a keyboard. */
   const char* s = getenv("NBA_PRESS");
-  while (s && *s && I.nscript < 16) {
+  while (s && *s && I.nscript < 128) {
     Press p;
     unsigned mask;
     if (sscanf(s, "%d:%x:%d:%d", &p.port, &mask, &p.from, &p.to) != 4) break;

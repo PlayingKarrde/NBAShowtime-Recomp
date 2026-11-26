@@ -11,10 +11,14 @@
 //   --fullscreen   desktop fullscreen
 //   --aspect A     render aspect ratio, e.g. 16:9 or 21:9 (default 4:3): widescreen
 //   --stretch      fill the window (ignore the aspect ratio)
+//   --vsync        present frames on the display's refresh (no tearing; best on 120 Hz+ displays,
+//                  on a 60 Hz display a frame can wait almost a whole refresh)
+//   --volume P     sound volume in percent (default 300; the board's output is quiet)
 //   --no-sound     skip audio output
 //   --unthrottled  run as fast as possible
 //   --dump DIR     write rendered frames as PNG (with --dump-every N, --dump-start N)
 //   --frames N     quit after N frames; --hidden: no visible window (testing)
+#include <math.h>
 #include <stdarg.h>
 #if defined(__linux__)
 #include <execinfo.h>
@@ -40,7 +44,8 @@ static struct {
   SDL_Window* window;
   SDL_GLContext gl;
   SDL_AudioStream* audio;
-  int stretch, throttle, verbose;
+  int stretch, throttle, verbose, perf;
+  int vsync;     /* present on the display's refresh (time-based pacing still sets the speed) */
   float aspect; /* render aspect ratio */
   uint64_t frame; /* buffer swaps so far */
   const char* dump_dir;
@@ -97,12 +102,24 @@ void recomp_watch_hit(RecompContext* ctx, uint32_t addr, uint32_t value) { (void
 /* ---- per frame (called from the game's buffer swap) ---- */
 /* Keep at most ~80 ms of audio queued: anything beyond that would only add latency (e.g. audio
    produced while the emulation briefly ran ahead), so it is dropped. */
+static double g_audio_sq; /* --perf: sum of squares and peak of the samples played */
+static uint64_t g_audio_n;
+static int g_audio_peak;
+
 static void pump_audio(void) {
   int16_t buf[4096 * 2];
   int n;
   const int max_queued = dcs2_audio_rate() * 4 * 80 / 1000;
-  while ((n = dcs2_audio_read(buf, 4096)) > 0)
+  while ((n = dcs2_audio_read(buf, 4096)) > 0) {
+    if (H.perf)
+      for (int i = 0; i < n * 2; ++i) {
+        const int v = buf[i];
+        g_audio_sq += (double)v * v;
+        if (abs(v) > g_audio_peak) g_audio_peak = abs(v);
+      }
+    g_audio_n += (uint64_t)n * 2;
     if (H.audio && SDL_GetAudioStreamQueued(H.audio) < max_queued) SDL_PutAudioStreamData(H.audio, buf, n * 4);
+  }
 }
 
 static void handle_events(void) {
@@ -121,20 +138,38 @@ static void handle_events(void) {
   }
 }
 
+/* Keep game time in step with wall time: the arcade's 57 Hz. This is the only clock; with
+   --vsync the swap also waits for the display's next refresh, which only delays a frame by up to
+   one refresh (pacing then sleeps less). Vsync is not used as the clock because what drivers do
+   with swap intervals varies (on Wayland an interval of 2 is ignored, the reported refresh rate
+   can differ from the real one), and two clocks fighting hold frames for extra refreshes. */
+static double g_pace_sleep_ms; /* --perf */
+
 static void pace(void) {
   const double virt = g_vegas.cop0.cycles / 125e6;
   const uint64_t now = SDL_GetTicksNS();
   const double wall = (now - H.wall_base_ns) / 1e9;
   const double ahead = (virt - H.virt_base) - wall;
-  if (ahead > 0) SDL_DelayPrecise((uint64_t)(ahead * 1e9));
+  if (ahead > 0) {
+    SDL_DelayPrecise((uint64_t)(ahead * 1e9));
+    g_pace_sleep_ms += ahead * 1e3;
+  }
   else if (ahead < -0.25) { /* fell behind (loading, slow host): don't try to catch up */
     H.wall_base_ns = now;
     H.virt_base = virt;
   }
 }
 
+static uint64_t g_frame_done_ns; /* --perf: end of the previous present */
+static double g_emu_worst, g_present_worst;
+
 static void on_frame(void* user, uint64_t frame) {
   (void)user;
+  const uint64_t t_emu_end = SDL_GetTicksNS();
+  if (H.perf && g_frame_done_ns) {
+    const double e = (t_emu_end - g_frame_done_ns) / 1e6;
+    if (e > g_emu_worst) g_emu_worst = e;
+  }
   int ww, wh;
   SDL_GetWindowSizeInPixels(H.window, &ww, &wh);
   int dw = ww, dh = wh, dx = 0, dy = 0;
@@ -144,6 +179,9 @@ static void on_frame(void* user, uint64_t frame) {
   }
   renderer_gl_present(ww, wh, dx, dy, dw, dh);
   SDL_GL_SwapWindow(H.window);
+  if (H.vsync) glFinish(); /* wait for this vblank here: don't let the driver queue frames (latency) */
+  g_frame_done_ns = SDL_GetTicksNS();
+  if (H.perf && (g_frame_done_ns - t_emu_end) / 1e6 > g_present_worst) g_present_worst = (g_frame_done_ns - t_emu_end) / 1e6;
 
   if (H.dump_dir && frame >= H.dump_start && (frame - H.dump_start) % H.dump_every == 0) {
     int w, h;
@@ -163,6 +201,55 @@ static void on_frame(void* user, uint64_t frame) {
     quit(0);
   }
   H.frame = frame + 1;
+  if (H.perf) { /* frame pacing: wall time between presented frames */
+    static uint64_t prev;
+    static double worst;
+    static int late;
+    const uint64_t t = SDL_GetTicksNS();
+    if (prev) {
+      const double dt = (t - prev) / 1e6;
+      if (dt > worst) worst = dt;
+      if (dt > 1.25 * 1000.0 / 57.0) late++;
+    }
+    prev = t;
+    if (H.frame % 60 == 0) {
+      fprintf(stderr, "[perf]   present: worst gap %.1f ms, %d late frames; worst emulation %.1f ms, worst present+swap %.1f ms\n",
+              worst, late, g_emu_worst, g_present_worst);
+      fprintf(stderr, "[perf]   paced sleep %.0f ms\n", g_pace_sleep_ms);
+      g_pace_sleep_ms = 0;
+      g_emu_worst = g_present_worst = 0;
+      worst = 0;
+      late = 0;
+    }
+  }
+  if (H.perf && H.frame % 60 == 0) { /* speed report: game frames vs host time */
+    static uint64_t last_ns, last_cyc;
+    const uint64_t now = SDL_GetTicksNS(), cyc = g_vegas.cop0.cycles;
+    if (last_ns)
+      fprintf(stderr, "[perf] swap %llu: 60 swaps in %.0f ms host, %.0f ms game (%.2fx)\n", (unsigned long long)H.frame,
+              (now - last_ns) / 1e6, (cyc - last_cyc) / 125e3, ((cyc - last_cyc) / 125e3) / ((now - last_ns) / 1e6));
+    static Dcs2Stats ld;
+    const Dcs2Stats* ds = &g_dcs2_stats;
+    fprintf(stderr, "[perf]   dcs2: %llu host words, %llu replies, %llu samples, %llu irq1, %.1f M dsp insns\n",
+            (unsigned long long)(ds->host_writes - ld.host_writes), (unsigned long long)(ds->output_writes - ld.output_writes),
+            (unsigned long long)(ds->samples - ld.samples), (unsigned long long)(ds->irq1 - ld.irq1),
+            (ds->instructions - ld.instructions) / 1e6);
+    ld = *ds;
+    fprintf(stderr, "[perf]   audio: rms %.0f, peak %d\n", g_audio_n ? sqrt(g_audio_sq / g_audio_n) : 0.0, g_audio_peak);
+    {
+      static uint64_t lv[VT_COUNT];
+      static const char* names[VT_COUNT] = {"insn", "count", "ide", "banshee", "ioasic", "mmio"};
+      fprintf(stderr, "[perf]   vtime ms:");
+      for (int k = 0; k < VT_COUNT; ++k) { fprintf(stderr, " %s %.0f", names[k], (g_vtime[k] - lv[k]) / 125e3); lv[k] = g_vtime[k]; }
+      fprintf(stderr, "\n");
+    }
+    g_audio_sq = 0;
+    g_audio_n = 0;
+    g_audio_peak = 0;
+    if (H.frame % 600 == 0) dcs2_debug_dump();
+    last_ns = now;
+    last_cyc = cyc;
+  }
 }
 
 /* Every emulated vblank, also during loading screens where the game does not swap buffers. */
@@ -251,6 +338,7 @@ int main(int argc, char** argv) {
   const char* sound = "work/bios/vegassio.bin";
   float scale = 0;
   int win_w = 1280, win_h = 960, fullscreen = 0, hidden = 0, no_sound = 0;
+  float volume = 3.0f;
   H.throttle = 1;
   H.aspect = 4.0f / 3.0f;
   H.dump_every = 60;
@@ -270,15 +358,18 @@ int main(int argc, char** argv) {
       else H.aspect = (float)atof(next);
     }
     else if (ARG("--dump")) H.dump_dir = next;
+    else if (ARG("--volume")) volume = (float)atof(next) / 100.0f;
     else if (ARG("--dump-every")) H.dump_every = strtoull(next, NULL, 0);
     else if (ARG("--dump-start")) H.dump_start = strtoull(next, NULL, 0);
     else if (ARG("--frames")) H.max_frames = strtoull(next, NULL, 0);
     else if (!strcmp(a, "--fullscreen")) fullscreen = 1;
     else if (!strcmp(a, "--stretch")) H.stretch = 1;
+    else if (!strcmp(a, "--vsync")) H.vsync = 1;
     else if (!strcmp(a, "--no-sound")) no_sound = 1;
     else if (!strcmp(a, "--unthrottled")) H.throttle = 0;
     else if (!strcmp(a, "--hidden")) hidden = 1;
     else if (!strcmp(a, "--verbose")) H.verbose = 1;
+    else if (!strcmp(a, "--perf")) H.perf = 1;
     else { fprintf(stderr, "unknown option %s (see the comment at the top of src/host/main.c)\n", a); return 2; }
 #undef ARG
   }
@@ -318,8 +409,12 @@ int main(int argc, char** argv) {
   if (!H.window) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
   H.gl = SDL_GL_CreateContext(H.window);
   if (!H.gl) { fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError()); return 1; }
-  SDL_GL_SetSwapInterval(0); /* paced by the emulated vblank instead */
+  SDL_SyncWindow(H.window); /* let fullscreen take effect before sizing the render target */
   if (nba_gl_load() != 0) return 1;
+  if (!H.vsync || !SDL_GL_SetSwapInterval(1)) {
+    H.vsync = 0;
+    SDL_GL_SetSwapInterval(0); /* paced by the emulated vblank instead */
+  }
   if (scale <= 0) {
     int pw, ph;
     SDL_GetWindowSizeInPixels(H.window, &pw, &ph);
@@ -335,7 +430,10 @@ int main(int argc, char** argv) {
   if (!no_sound) {
     SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, dcs2_audio_rate()};
     H.audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
-    if (H.audio) SDL_ResumeAudioStreamDevice(H.audio);
+    if (H.audio) {
+      SDL_SetAudioStreamGain(H.audio, volume);
+      SDL_ResumeAudioStreamDevice(H.audio);
+    }
     else fprintf(stderr, "no audio: %s\n", SDL_GetError());
   }
   input_init();

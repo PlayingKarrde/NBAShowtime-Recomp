@@ -146,6 +146,18 @@ latches, control registers) follow MAME's DCS2 2104 notes:
 - **SPORT1 autobuffered transmit** → audio. The rate is 16 MHz / (2×(SCLKDIV+1)) / 32 with internal
   clock, else 31,250 Hz. IRQ1 fires on buffer wrap. Samples go to a ring buffer (`dcs2_audio_read`).
 - The DSP runs at 16 MHz in step with virtual time (`dcs2_sync`, converting absolute time).
+- **Host access time matters.** During a bank load (host commands 0x55D0/0x55D1) the sound program
+  points its IRQ2 vector at a bare RTI and polls the latch itself. After the last word it replies
+  with a checksum and restores the vector a few microseconds later (2–25 DSP cycles, depending on
+  which interrupt it is in). IRQ2 is edge-triggered (ICNTL bit 2), so a command written in that
+  window is taken by the RTI and lost. Nothing acknowledges the latch after that, every later
+  command times out, and the game spins in those timeouts: no gameplay sound and several missed
+  frames per second. With the old 32 ns MMIO cost, the game process that starts the next transfer
+  after the last pre-game bank load wrote into the window. I/O ASIC accesses now cost about 0.5 µs
+  each (`IOASIC_COST` in vegas_machine.c), which is plausible for the slow peripheral bus. With
+  that cost, gameplay sends commands normally and the game holds 57 fps.
+- `DCS_LOG_IO=1` logs latch traffic, checksum replies and vector writes. `DCS_TRACE_ON_CMD=55D1
+  DCS_TRACE_AFTER=<dsp cycle>` single-steps the DSP after a given host word.
 
 Verification: `./build/ioasic_replay work/dumps/sound_trace.txt work/bios/vegassio.bin` replays the MAME
 sound-port trace (400k words) through the emulated board. **All 120 replies match the real board**

@@ -8,6 +8,19 @@ at buffer swaps, so loading screens are paced too, and at most about 80 ms of au
 Run it from the repository root after dumping the entry state:
 
     ./build/nbashowtime [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
+                        [--volume PERCENT] [--vsync] [--perf]
+
+Timing comes from the arcade's 57 Hz vblank alone. `--vsync` also makes each swap wait for the
+display's next refresh, which removes tearing. That works best on 120 Hz+ displays; on a 60 Hz
+display a frame can wait almost a whole refresh. Vsync is never the clock: drivers differ in what
+they do with swap intervals. On Wayland/NVIDIA an interval of 2 is ignored, and SDL reported
+119.88 Hz for a display whose swaps blocked every 6.94 ms. Two clocks also fight and hold frames
+for an extra refresh. `--volume` defaults to 300%, because the board's output is quiet (gameplay
+RMS around -40 dBFS before the gain). `--perf` prints once per 60 frames:
+- host time versus game time;
+- presentation gaps and late frames;
+- sound-board traffic and audio level;
+- where game time went (instructions, Count reads, IDE, Banshee, I/O ASIC).
 
 Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched.
 
@@ -27,7 +40,8 @@ If the game stops swapping buffers for 10 s of game time, it prints a stall repo
 counters, recent guest functions and a host stack trace. `NBA_STALL_EXIT=1` quits after the report. With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
 writes frames for comparison with the software renderer. Frame 3600 at 2x matches it with a mean
 difference of 0.5/255, and about 0.4% of pixels differ visibly, all at triangle edges. Unthrottled,
-it runs about twice as fast as real time at 1280x960.
+it runs about twice as fast as real time at 1280x960. In gameplay it needs about 580 ms of host
+time per second of game on average, and 860 ms in the worst second.
 
 ## Widescreen
 `--aspect 16:9` (or 21:9, any ratio) uses "Hor+" widescreen. The game keeps its focal length, and
