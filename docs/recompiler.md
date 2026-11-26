@@ -7,8 +7,20 @@ real time. Run it from the repository root after dumping the entry state:
 
     ./build/nbashowtime [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
 
-Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched. Cabinet inputs are
-not wired yet. With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
+Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched.
+
+| | Player 1 | Player 2 | Players 3/4 |
+|---|---|---|---|
+| Stick | arrows | I J K L | gamepad |
+| A / B / Turbo | Z / X / C (or Left Shift) | Q / W / E | gamepad |
+| Start / Coin | 1 / 5 | 2 / 6 | 3, 4 / 7, 8 |
+
+Gamepads are players 1-4 in connection order:
+- The left stick is analog, using all 7 positions of the 49-way stick; the D-pad works too.
+- South = A, East = B, West or any shoulder/trigger = Turbo, Start = Start, Back = Coin.
+
+F9 adds a service credit, F10 is the test switch, and - / = change the volume.
+`NBA_PRESS=port:mask:from:to[,...]` scripts presses for tests (see `src/host/input.c`). With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
 writes frames for comparison with the software renderer. Frame 3600 at 2x matches it with a mean
 difference of 0.5/255, and about 0.4% of pixels differ visibly, all at triangle edges. Unthrottled,
 it runs about twice as fast as real time at 1280x960.

@@ -82,8 +82,19 @@ the VRC5074 remaps its windows during BIOS start-up). The registers are 16-bit, 
 | +0x12 | R/W | sound board reset: 0 = held in reset, 1 = run |
 | +0x14 | R | sound status: 0x80 = board ready for data, 0x40 = reply available, 0x08 always set |
 | +0x16 | R/W | reply word from the sound board; written 0 to acknowledge |
-| +0x18 / +0x1A / +0x1C | R | input ports, active low (idle: FFFF / F0FF / FFFF) |
+| +0x18 | R | IN1, active low: P1 stick bits 0-3, A 0x10, B 0x20, Turbo 0x40; P2 the same << 8 |
+| +0x1A | R | IN2: P3 like P1, P4 like P2; bits 8-11 come from the 49-way joystick adapter |
+| +0x1C | R | SYSTEM: coin 1/2 0x1/0x2, start 1/2 0x4/0x20, tilt 0x8, test 0x10, service 0x40, coin 3/4 0x80/0x100, start 3/4 0x200/0x400, volume -/+ 0x800/0x1000 |
+| +0x1E | R | DIP switches (dumped as BE7E: bit 8 clear = 49-way joysticks) |
 | +0x1E | R | DIP switches (0xBE7E as shipped) |
+
+### 49-way joysticks
+With DIP bit 8 clear, the stick positions are read through IN2 bits 8-11. The game writes an index
+to the select register (+0x04): 0-7 select P1 X, P1 Y, P2 X, …, P4 Y. Each axis has 7 positions
+(X 0 = left, Y 0 = up, 3 = centre), and the adapter returns `~{8,C,E,F,3,1,0}[pos] & 0xF`.
+Selects 8 and 9 read 0xF. Selects 0xA-0xF read the select value back, which the game uses to
+detect the adapter. These are the idle values measured earlier.
+The register order was found by test: a coin press on +0x1C credits the game.
 
 ### DCS2 boot monitor protocol
 `vegassio.bin` from the ROM set is the sound board's boot ROM (MAME loads it into the `dcs` region).

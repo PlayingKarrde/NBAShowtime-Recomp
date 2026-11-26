@@ -146,6 +146,16 @@ void ioasic_init(void) {
   io.state = DCS_WAIT_CMD;
 }
 
+static uint8_t stick_pos[4][2] = {{3, 3}, {3, 3}, {3, 3}, {3, 3}};
+
+void ioasic_set_stick(int player, int x, int y) {
+  if (player < 0 || player > 3) return;
+  stick_pos[player][0] = (uint8_t)(x < 0 ? 0 : x > 6 ? 6 : x);
+  stick_pos[player][1] = (uint8_t)(y < 0 ? 0 : y > 6 ? 6 : y);
+}
+
+uint16_t ioasic_get_input(int port) { return (port >= 0 && port < 4) ? io.inputs[port] : 0xFFFF; }
+
 void ioasic_set_input(int port, uint16_t value) {
   if (port >= 0 && port < 4) io.inputs[port] = value;
 }
@@ -173,10 +183,13 @@ static uint16_t read16(uint32_t off) {
       return io.last_reply;
     case REG_INPUT_A: return io.inputs[IOASIC_IN_A];
     case REG_INPUT_B: {
-      /* Bits 8-11 follow the select register: 0 for selects 0-7, 0xF for 8/9, the select
-         value itself for 0xA-0xF (measured). */
+      /* Bits 8-11 come from the 49-way joystick adapter, indexed by the select register:
+         0-7 = P1 X, P1 Y, P2 X, ... P4 Y as the inverted 7-position code; 8/9 read 0xF;
+         0xA-0xF read the select value (adapter detection). Matches the idle values measured. */
+      static const uint8_t code49[7] = {0x8, 0xC, 0xE, 0xF, 0x3, 0x1, 0x0};
       const uint16_t sel = io.regs[REG_SELECT / 2] & 0xF;
-      const uint16_t field = sel < 8 ? 0 : sel < 0xA ? 0xF : sel;
+      const uint16_t field = sel < 8 ? (uint16_t)(~code49[stick_pos[sel >> 1][sel & 1]] & 0xF)
+                                     : sel < 0xA ? 0xF : sel;
       return (uint16_t)((io.inputs[IOASIC_IN_B] & ~0x0F00u) | (field << 8));
     }
     case REG_INPUT_C: return io.inputs[IOASIC_IN_C];

@@ -24,6 +24,7 @@
 #include "../../runtime/src/dcs2.h"
 #include "../../runtime/src/raster_sw.h"
 #include "gl_funcs.h"
+#include "input.h"
 #include "recomp.h"
 #include "recomp_funcs.h"
 #include "renderer_gl.h"
@@ -95,6 +96,7 @@ static void pump_audio(void) {
 static void handle_events(void) {
   SDL_Event e;
   while (SDL_PollEvent(&e)) {
+    input_event(&e);
     if (e.type == SDL_EVENT_QUIT) quit(0);
     if (e.type == SDL_EVENT_KEY_DOWN) {
       if (e.key.key == SDLK_ESCAPE) quit(0);
@@ -150,6 +152,7 @@ static void on_frame(void* user, uint64_t frame) {
   }
   pump_audio();
   handle_events();
+  input_update(frame);
   if (H.throttle) pace();
 }
 
@@ -282,6 +285,7 @@ int main(int argc, char** argv) {
     if (H.audio) SDL_ResumeAudioStreamDevice(H.audio);
     else fprintf(stderr, "no audio: %s\n", SDL_GetError());
   }
+  input_init();
   H.wall_base_ns = SDL_GetTicksNS();
   H.virt_base = g_vegas.cop0.cycles / 125e6;
 

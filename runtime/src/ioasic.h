@@ -19,6 +19,16 @@ void ioasic_write(uint32_t phys, uint32_t value, int size);
 
 /* Host side: set an input port word (bits are active low, 0 = pressed / switch on). */
 void ioasic_set_input(int port, uint16_t value);
+uint16_t ioasic_get_input(int port);
+
+/* NBA Showtime's ports (active low): SYSTEM = coins/starts/service, IN1 = P1/P2 buttons,
+   IN2 = P3/P4 buttons (bits 8-11 come from the 49-way joystick adapter), DIP = switches. */
+#define IOASIC_PORT_SYSTEM IOASIC_IN_C
+#define IOASIC_PORT_IN1 IOASIC_IN_A
+#define IOASIC_PORT_IN2 IOASIC_IN_B
+/* 49-way joystick position per player (0..3) and axis: 0..6, 3 = centre; X: 0 = left,
+   Y: 0 = up. Read by the game through the I/O ASIC select register (selects 0-7). */
+void ioasic_set_stick(int player, int x, int y);
 
 /* DCS2 sound board state (for diagnostics and, later, real DSP emulation). */
 typedef struct {

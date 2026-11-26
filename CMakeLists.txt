@@ -48,7 +48,7 @@ if(GENERATED_SOURCES)
   # The game itself: SDL3 window + OpenGL renderer + audio (needs SDL3 development files).
   find_package(SDL3 CONFIG QUIET)
   if(SDL3_FOUND)
-    add_executable(nbashowtime src/host/main.c src/host/renderer_gl.c)
+    add_executable(nbashowtime src/host/main.c src/host/renderer_gl.c src/host/input.c)
     target_include_directories(nbashowtime PRIVATE runtime/include generated)
     target_link_libraries(nbashowtime PRIVATE recomp_runtime game_recomp recomp_runtime SDL3::SDL3 m)
   else()
