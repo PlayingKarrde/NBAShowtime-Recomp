@@ -43,6 +43,34 @@ void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what);
 #define RECOMP_BIOS_SYSCALL_COUNT 104u
 int recomp_bios_syscall(RecompContext* ctx, uint32_t code);
 
+/* Loop back-edge accounting: every backward branch charges its body size (instructions) to a
+   budget; when it runs out the runtime advances virtual time and delivers interrupts. This makes
+   loops that only poll RAM (e.g. waiting for a vblank counter) see interrupts, and keeps timing
+   deterministic. */
+extern int32_t recomp_budget;
+void recomp_slice(RecompContext* ctx);
+#define RECOMP_LOOP(n) do { recomp_budget -= (n); if (recomp_budget < 0) recomp_slice(ctx); } while (0)
+
+/* Game process switching (runtime/src/proc.c): emitted at the scheduler's resume `jr ra` and at
+   the jumps back into the scheduler from sleep/exit. */
+void recomp_proc_switch_in(RecompContext* ctx);
+void recomp_proc_switch_out(RecompContext* ctx, uint32_t from);
+
+/* Optional function-entry trace for debugging (configure with -DRECOMP_TRACE_CALLS=ON):
+   every recompiled function records its guest address in a ring buffer. */
+#ifdef RECOMP_TRACE_CALLS
+#define RECOMP_CALL_RING 4096
+extern uint32_t recomp_call_ring[RECOMP_CALL_RING];
+extern uint32_t recomp_call_pos;
+extern uint32_t recomp_break_addr;     /* function address to stop at (0 = none) */
+void recomp_break_hit(uint32_t addr);  /* provided by the host */
+#define RECOMP_ENTER(a) \
+  do { recomp_call_ring[recomp_call_pos++ & (RECOMP_CALL_RING - 1)] = (a); \
+       if ((a) == recomp_break_addr) recomp_break_hit(a); } while (0)
+#else
+#define RECOMP_ENTER(a) ((void)0)
+#endif
+
 /* ---- integer helpers ---- */
 #define SE32(x) ((uint64_t)(int64_t)(int32_t)(uint32_t)(x))
 #define R32(n) ((uint32_t)ctx->r[n])

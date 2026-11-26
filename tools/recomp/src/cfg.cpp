@@ -59,7 +59,7 @@ bool recover_jump_table(const Image& img, uint32_t fstart, uint32_t limit, uint3
 
   // 2) find lui feeding the lw base (directly, or through one addu)
   int base = lw.rs;
-  uint32_t hi = 0;
+  uint32_t hi = 0, lo_add = 0;
   bool have_hi = false;
   std::set<int> base_regs = {base};
   for (uint32_t pc = lw_pc - 4; pc >= lo_bound && pc >= fstart; pc -= 4) {
@@ -68,13 +68,19 @@ bool recover_jump_table(const Image& img, uint32_t fstart, uint32_t limit, uint3
     if (w >= 0 && base_regs.count(w)) {
       if (i.op == Op::LUI) { hi = uint32_t(i.uimm) << 16; have_hi = true; break; }
       if (i.op == Op::ADDU) { base_regs.erase(w); base_regs.insert(i.rs); base_regs.insert(i.rt); continue; }
-      break;
+      // lui rX, %hi(T); addiu rX, rX, %lo(T): fold the low half into the table address
+      if (i.op == Op::ADDIU && i.rs == i.rt) { lo_add += uint32_t(int32_t(i.simm)); continue; }
+      // the index register (shifted/moved) also feeds the addu: ignore its producers
+      if (i.op == Op::SLL || i.op == Op::ADDU || i.op == Op::OR) { base_regs.erase(w); continue; }
+      base_regs.erase(w);
+      if (base_regs.empty()) break;
+      continue;
     }
     if (pc == fstart) break;
   }
   if (!have_hi) return false;
   out.jr_pc = jr_pc;
-  out.table_addr = hi + uint32_t(int32_t(lw.simm));
+  out.table_addr = hi + lo_add + uint32_t(int32_t(lw.simm));
 
   // 3) entry count from a preceding sltiu bound check, if any
   uint32_t count = 0;
@@ -99,8 +105,10 @@ bool recover_jump_table(const Image& img, uint32_t fstart, uint32_t limit, uint3
 
 // Walks the body of a function starting at `start`, bounded by `limit`.
 // Returns false if the walk hits an invalid instruction (body is not real code).
-bool walk(const Image& img, FuncCfg& f) {
+bool walk(const Image& img, FuncCfg& f, const std::set<uint32_t>& extra = {}) {
   std::deque<uint32_t> work = {f.start};
+  for (uint32_t e : extra)
+    if (e > f.start && e < f.limit) { work.push_back(e); f.labels.insert(e); }
   bool ok = true;
   auto in_body = [&](uint32_t a) { return a >= f.start && a < f.limit; };
 
@@ -176,7 +184,7 @@ bool walk(const Image& img, FuncCfg& f) {
 
 }  // namespace
 
-Program build_program(const Image& img, const Analysis& a) {
+Program build_program(const Image& img, const Analysis& a, const std::set<uint32_t>& extra_entries) {
   Program p;
   p.text_start = a.text_start;
   p.text_end = a.text_end;
@@ -192,7 +200,7 @@ Program build_program(const Image& img, const Analysis& a) {
       f.start = *it;
       auto next = std::next(it);
       f.limit = next == starts.end() ? a.text_end : *next;
-      walk(img, f);
+      walk(img, f, extra_entries);
 
       // Unreachable tail: first non-zero word after the last reachable instruction.
       if (!f.syscall_stub) {

@@ -3,9 +3,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "banshee.h"
 #include "ide.h"
 #include "ioasic.h"
 #include "nile.h"
+#include "nvram.h"
+#include "pci.h"
+#include "sio.h"
 #include "vegas.h"
 
 VegasMachine g_vegas;
@@ -27,13 +31,17 @@ void (*vegas_log)(const char* fmt, ...) = default_log;
 #define FRAME_EPC 0x110u
 #define FRAME_COP0(n) (0x118u + 8u * (n)) /* CP0 register n as saved by the entry code */
 
-int vegas_init(const char* disk_image, const char* nile_regs) {
+int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs) {
   memset(&g_vegas, 0, sizeof g_vegas);
   g_vegas.cop0.sr = 0x30011C01u; /* value at game entry (MAME snapshot) */
   g_vegas.cop0.compare = 0xFFFFFFFFu;
   g_vegas.count_step = 2000;     /* 16 us of virtual time per Count read */
   nile_init(nile_regs);
   ioasic_init();
+  sio_init(sio_regs);
+  nvram_init(NULL); /* blank board: the game validates and restores defaults */
+  pci_init();
+  banshee_init();
   return ide_init(disk_image);
 }
 
@@ -53,6 +61,8 @@ void vegas_advance(uint64_t cycles) {
   /* Count/Compare timer: fires when Count passes Compare. */
   if ((uint32_t)(g_vegas.cop0.compare - before) <= (uint32_t)(after - before) && after != before)
     vegas_set_irq(VEGAS_IRQ_TIMER, 1);
+  nile_advance();
+  sio_advance(g_vegas.cop0.cycles);
 }
 
 static uint32_t cause_now(void) {
@@ -85,6 +95,8 @@ void vegas_poll_interrupts(RecompContext* ctx) {
     g_vegas.cop0.cause = cause;
     g_vegas.in_interrupt = 1;
     g_vegas.interrupts_delivered++;
+    for (int ip = 7; ip >= 0; --ip)
+      if (cause & sr & (0x100u << ip)) { g_vegas.irq_count[ip]++; break; }
     ctx->r[4] = SE32(cause);
     recomp_lookup(ctx, BIOS_EXC_HANDLER)(ctx);
     g_vegas.in_interrupt = 0;
@@ -94,6 +106,17 @@ void vegas_poll_interrupts(RecompContext* ctx) {
     *ctx = saved;
     g_vegas.cop0.sr = (frame_sr | 1u) & ~2u;
   }
+}
+
+/* ---- loop budget ---- */
+#define SLICE_INSTRUCTIONS 4000 /* ~16 us of R5000 time between interrupt checks in tight loops */
+int32_t recomp_budget = SLICE_INSTRUCTIONS;
+
+void recomp_slice(RecompContext* ctx) {
+  const int32_t used = SLICE_INSTRUCTIONS - recomp_budget;
+  recomp_budget = SLICE_INSTRUCTIONS;
+  vegas_advance((uint64_t)used / 2); /* ~1 instruction per CPU cycle; Count runs at half speed */
+  vegas_poll_interrupts(ctx);
 }
 
 /* ---- CP0 hooks called by recompiled code ---- */
@@ -143,12 +166,20 @@ static uint8_t g_vegas_led;
 uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
   const uint32_t p = recomp_phys(vaddr);
   uint32_t v;
-  if (ide_handles(p)) {
+  if (pci_handles(p)) {
+    v = pci_read(p, size);
+  } else if (ide_handles(p)) {
     v = ide_read(p, size);
+  } else if (banshee_io_handles(p)) {
+    v = banshee_io_read(p, size);
   } else if (nile_handles(p)) {
     v = nile_read(p, size);
   } else if (ioasic_handles(p)) {
     v = ioasic_read(p, size);
+  } else if (sio_handles(p)) {
+    v = sio_read(p, size);
+  } else if (nvram_handles(p)) {
+    v = nvram_read(p, size);
   } else if (p == VEGAS_LED) {
     v = g_vegas_led;
   } else {
@@ -162,12 +193,20 @@ uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size) {
 
 void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int size) {
   const uint32_t p = recomp_phys(vaddr);
-  if (ide_handles(p)) {
+  if (pci_handles(p)) {
+    pci_write(p, value, size);
+  } else if (ide_handles(p)) {
     ide_write(ctx, p, value, size);
+  } else if (banshee_io_handles(p)) {
+    banshee_io_write(p, value, size);
   } else if (nile_handles(p)) {
     nile_write(p, value, size);
   } else if (ioasic_handles(p)) {
     ioasic_write(p, value, size);
+  } else if (sio_handles(p)) {
+    sio_write(p, value, size);
+  } else if (nvram_handles(p)) {
+    nvram_write(p, value, size);
   } else if (p == VEGAS_LED) {
     g_vegas_led = (uint8_t)value; /* board diagnostic LED / 7-segment code */
   } else {

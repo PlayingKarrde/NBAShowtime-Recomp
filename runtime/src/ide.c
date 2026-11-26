@@ -98,8 +98,10 @@ static void read_sector(uint64_t lba, uint8_t* out) {
   g_ide_stats.sectors_read++;
 }
 
+int ide_discard_writes; /* debug: drop all writes */
+
 static void write_sector(uint64_t lba, const uint8_t* in) {
-  if (lba >= ide.sectors) return;
+  if (lba >= ide.sectors || ide_discard_writes) return;
   uint8_t** page = &ide.overlay[lba / OVERLAY_PAGE];
   if (!*page) *page = calloc(1, OVERLAY_PAGE * SECTOR + OVERLAY_PAGE);
   memcpy(*page + (lba % OVERLAY_PAGE) * SECTOR, in, SECTOR);
@@ -211,7 +213,10 @@ static void run_dma(RecompContext* ctx) {
   finish_command(remaining != 0);
 }
 
+int ide_trace; /* debug: log commands */
+
 static void execute(RecompContext* ctx, uint8_t cmd) {
+  if (ide_trace) vegas_log("ide: cmd %02X lba %llu count %u", cmd, (unsigned long long)cur_lba(), cur_count());
   ide.command = cmd;
   ide.error = 0;
   g_ide_stats.commands++;

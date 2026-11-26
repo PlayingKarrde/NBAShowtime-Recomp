@@ -71,6 +71,12 @@ if cpu.debug then
       end
       nf:close()
       print("[dump] wrote entry_nile.bin")
+      -- SIO board registers (control, interrupt status, interrupt enable, ...): one byte each at
+      -- 0x04000000 + 0x1000 * n, n = 0..7.
+      local sf = assert(io.open(outdir .. "/entry_sio.bin", "wb"))
+      for n = 0, 7 do sf:write(string.char(space:read_u8(0x04000000 + 0x1000 * n) & 0xff)) end
+      sf:close()
+      print("[dump] wrote entry_sio.bin")
       cpu.debug:bpclear()
       done = true
     end

@@ -87,11 +87,16 @@ int main(int argc, char** argv) {
       for (const Sec& sc : secs) if (t >= sc.start && t < sc.end) return true;
       return false;
     };
+    // Game process scheduler (main loop 0x801B4270): resumes a process with `jr ra` at
+    // 0x801B4760; sleep (0x801B3F98) and exit (0x801B4088) jump back to 0x801B4764.
+    constexpr uint32_t kProcSwitchInJr = 0x801B4760, kProcResume = 0x801B4764;
+    all.proc_switch_in.insert(kProcSwitchInJr);
+    all.proc_resume = kProcResume;
     for (const Sec& sc : secs) {
       const Analysis a = analyze_section(img, sc.start, sc.end, sc.entries, sc.ds, sc.de);
       for (const auto& [t, n] : a.external_calls)
         if (!in_any_text(t) && img.contains(t, 4)) outside_calls.insert(t);
-      const Program p = build_program(img, a);
+      const Program p = build_program(img, a, {kProcResume});
       size_t jt = 0, unres = 0, stubs = 0;
       for (const auto& [st, f] : p.funcs) {
         jt += f.jump_tables.size();

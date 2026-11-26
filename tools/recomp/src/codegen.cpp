@@ -59,9 +59,15 @@ struct Gen {
     if (is_func(t)) return "{ " + fname(t) + "(ctx); return; }";
     return fmt("{ recomp_lookup(ctx, 0x%08Xu)(ctx); return; }", t);
   }
-  // Code to transfer control to `t` (inside: goto; outside: tail call).
+  uint32_t cur_pc = 0;  // address of the branch being emitted
+
+  // Code to transfer control to `t` (inside: goto; outside: tail call). Backward gotos are loop
+  // edges and charge the loop body to the time budget (see RECOMP_LOOP in recomp.h).
   std::string go(uint32_t t) {
-    if (f->insns.count(t) && t >= f->start && t < f->limit) return "goto " + lbl(t) + ";";
+    if (f->insns.count(t) && t >= f->start && t < f->limit) {
+      if (t <= cur_pc) return fmt("{ RECOMP_LOOP(%u); goto %s; }", (cur_pc - t) / 4 + 2, lbl(t).c_str());
+      return "goto " + lbl(t) + ";";
+    }
     return tail_to(t);
   }
   std::string call(uint32_t t) {
@@ -265,6 +271,7 @@ struct Gen {
   void emit_function(const FuncCfg& fc) {
     f = &fc;
     out << "\nvoid " << fname(fc.start) << "(RecompContext* ctx) {\n";
+    out << fmt("  RECOMP_ENTER(0x%08Xu);\n", fc.start);
     if (fc.syscall_stub) {
       const Insn i = mips::decode(img.read32(fc.start));
       out << fmt("  recomp_syscall(ctx, 0x%xu, 0x%08Xu);\n}\n", (i.raw >> 6) & 0xFFFFF, fc.start);
@@ -295,6 +302,7 @@ struct Gen {
         continue;
       }
 
+      cur_pc = pc;
       const uint32_t ds_pc = pc + 4;
       const Insn ds = mips::decode(img.read32(ds_pc));
       std::string slot = simple(ds, ds_pc);
@@ -316,6 +324,11 @@ struct Gen {
           else out << "    if (c) " << go(t) << "\n";
           out << "  }\n";
         }
+      } else if (i.op == Op::J && prog.proc_resume && i.jump_target(pc) == prog.proc_resume &&
+                 !(prog.proc_resume >= fc.start && prog.proc_resume < fc.limit)) {
+        // process sleep/exit jumping back into the scheduler: switch fibers
+        out << "  " << slot_comment << slot << "\n  "
+            << fmt("recomp_proc_switch_out(ctx, 0x%08Xu); return;", fc.start) << "\n";
       } else if (i.op == Op::J) {
         out << "  " << slot_comment << slot << "\n  " << go(i.jump_target(pc)) << "\n";
       } else if (i.op == Op::JAL) {
@@ -326,7 +339,11 @@ struct Gen {
         if (i.rd) out << "    ctx->r[" << int(i.rd) << "] = " << fmt("0x%016llxull", (unsigned long long)SE32v(pc + 8)) << ";\n";
         out << "    " << slot_comment << slot << "\n    recomp_lookup(ctx, t)(ctx);\n  }\n";
       } else if (i.op == Op::JR) {
-        if (i.rs == 31) {
+        if (i.rs == 31 && prog.proc_switch_in.count(pc)) {
+          // scheduler resuming a game process: run it on its fiber, then continue the loop
+          out << "  " << slot_comment << slot << "\n  recomp_proc_switch_in(ctx);\n  "
+              << go(prog.proc_resume) << "\n";
+        } else if (i.rs == 31) {
           out << "  " << slot_comment << slot << "\n  return;\n";
         } else if (auto jt = fc.jump_tables.find(pc); jt != fc.jump_tables.end()) {
           out << "  {\n    uint32_t t = " << r32(i.rs) << ";\n    " << slot_comment << slot << "\n    switch (t) {\n";

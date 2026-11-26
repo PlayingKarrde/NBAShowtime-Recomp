@@ -30,8 +30,14 @@ struct FuncCfg {
 struct Program {
   uint32_t text_start = 0, text_end = 0;
   std::map<uint32_t, FuncCfg> funcs;
+  // Game process switching (see runtime/src/proc.c)
+  std::set<uint32_t> proc_switch_in;  // `jr ra` sites where the scheduler resumes a process
+  uint32_t proc_resume = 0;           // scheduler address that sleep/exit jump back to
 };
 
 // Builds CFGs for all functions found by `analyze`, discovering extra functions in
 // unreachable gaps (statics only reachable through pointers we missed).
-Program build_program(const Image& img, const Analysis& a);
+// `extra_entries`: addresses inside functions that are reached from elsewhere (e.g. jumps into
+// the middle of a function) and must be emitted with labels.
+Program build_program(const Image& img, const Analysis& a,
+                      const std::set<uint32_t>& extra_entries = {});

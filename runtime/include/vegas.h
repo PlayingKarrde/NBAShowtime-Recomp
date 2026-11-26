@@ -34,6 +34,7 @@ typedef struct VegasMachine {
   uint32_t hw_irq;          /* asserted hardware interrupt lines (Cause IP2..IP7 bits) */
   int in_interrupt;         /* nesting guard while the BIOS ISR runs */
   uint64_t interrupts_delivered;
+  uint64_t irq_count[8];    /* deliveries per Cause IP bit (diagnostics) */
   uint32_t count_step;      /* virtual cycles added per Count read (spin-loop progress) */
 } VegasMachine;
 
@@ -41,8 +42,9 @@ extern VegasMachine g_vegas;
 
 /* Initialise the machine. `disk_image` is the raw hard-disk image (chdman extracthd output);
    writes go to an in-memory overlay and the image file is never modified. `nile_regs` is the
-   VRC5074 register dump taken with the RAM snapshot (interrupt routing). Returns 0 on success. */
-int vegas_init(const char* disk_image, const char* nile_regs);
+   VRC5074 register dump taken with the RAM snapshot (interrupt routing, timers); `sio_regs` the
+   SIO board register dump (interrupt enables). Returns 0 on success. */
+int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs);
 
 /* Raise/lower a hardware interrupt line (VEGAS_IRQ_*). */
 void vegas_set_irq(uint32_t line_bit, int asserted);

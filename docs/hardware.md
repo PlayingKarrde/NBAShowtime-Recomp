@@ -7,14 +7,17 @@ traces (`tools/mame/trace_irqs.lua`).
 | physical | device | runtime model |
 |---|---|---|
 | 0x00000000–0x007FFFFF | main RAM (8 MB) | host array (`recomp_rdram`) |
-| 0x04000000–0x04006FFF | SIO board (I/O control, interrupt status at +0x1000, enable at +0x2000) | — |
-| 0x04400000–0x04407FFF | NVRAM / RTC (timekeeper; clock at the top) | — |
+| 0x04000000–0x04006FFF | SIO board: control +0x0000, interrupt enable +0x1000, status +0x2000 (one byte each) | `runtime/src/sio.c` |
+| 0x04400000–0x04407FFF | NVRAM / RTC (timekeeper; clock in the top 8 bytes) | `runtime/src/nvram.c` |
 | 0x04600000 | diagnostic LED / status code (written on every exception) | accepted, stored |
 | 0x04800000–0x0480001F | Midway I/O ASIC: control, inputs, DCS2 sound board ports | `runtime/src/ioasic.c` |
-| 0x0C000100–0x0C000107 | IDE task file | `runtime/src/ide.c` |
+| 0x0C000000–0x0C0000FF | Banshee I/O BAR (init/video registers) | `runtime/src/banshee.c` |
+| 0x0C000100–0x0C000107 | IDE task file (CMD646) | `runtime/src/ide.c` |
 | 0x0C00010A | IDE alternate status / device control | `ide.c` |
 | 0x0C000120–0x0C000127 | IDE bus-master DMA (cmd, status, PRD table) | `ide.c` |
-| 0x10400000–0x14FFFFFF | PCI memory windows (Glide probes 0x10400000, 0x10800000, 0x11000000, 0x12000000, 0x14000000) | — (Banshee) |
+| 0x10000000–0x17FFFFFF | PCI window (VRC5074 PCIINIT1: config or memory cycles) | `runtime/src/pci.c` |
+| 0x10000000 (memory) | Banshee BAR0: registers (init 0x0, command FIFO 0x80000, 2D 0x100000, 3D 0x200000) | `banshee.c` |
+| 0x12000000 (memory) | Banshee BAR1: 16 MB frame buffer / texture memory (+16 MB 3D LFB window) | `banshee.c` |
 | 0x1FA00000–0x1FA001FF | NEC VRC5074 ("Nile 4") system controller registers | `runtime/src/nile.c` |
 | 0x1FA00300–0x1FA0033F | VRC5074 16550 UART (registers 8 bytes apart) | `nile.c` (output → log) |
 
@@ -94,3 +97,40 @@ data (`g_dcs`). `tests/ioasic_replay` replays a MAME trace through it: all boot-
 the real board. The running program isn't executed yet (no audio). Its few query replies come from a
 small table, and 7 of 120 replies in the trace differ. Real audio needs the ADSP-2104 itself
 (emulation or recompilation of the uploaded program).
+
+## PCI bus (behind the VRC5074)
+The window at physical 0x10000000 does configuration or memory cycles depending on VRC5074 PCIINIT1
+(`+0xF8`, bits 3:1: 5 = configuration type 0, 3 = memory). The BIOS switches it around every config
+access. In config mode one address bit selects the slot (IDSEL):
+
+| address | slot | device |
+|---|---|---|
+| 0x10400000 / 0x10800000 / 0x12000000 | — | empty (reads 0xFFFFFFFF) |
+| 0x11000000 | IDSEL 24 | 3dfx Voodoo Banshee (0x0003121A), class 0x0300 rev 2, BAR0 0x10000000, BAR1 0x12000000, I/O 0x0C000001 |
+| 0x14000000 | IDSEL 26 | CMD646 IDE (0x06461095), I/O BARs 0x0C000101… |
+
+The VRC5074's own config space is at `+0x200` (NEC 0x005A1033, host bridge).
+
+## Voodoo Banshee
+Glide 3.10 (statically linked) drives the card directly. The model works at register level so that
+Glide's own code runs unmodified:
+- **init/video registers** with the values the real card returns (e.g. `vidScreenSize` 512×384);
+- **status** idle, with the vertical-retrace bit driven by virtual time;
+- **command FIFO** in VRAM (base `cmdBaseAddr0` 0xE9E pages, size from `cmdBaseSize0`). Glide writes
+  packets straight into frame-buffer memory and polls the read pointer (`+0x8002C`) and depth
+  (`+0x80044`). The model currently consumes instantly (read pointer = last write), so Glide never
+  waits. **The packets aren't parsed yet: that is the renderer's input.**
+
+## Timers and periodic interrupts
+- VRC5074 timers `+0x1C0 + 0x10n`: CTRL low = reload value, CTRL high bit 0 = enable, CNTR at +8.
+  They count down at 100 MHz. Only writing the reload value restarts a timer; toggling enable doesn't
+  (the BIOS timestamp, syscall 73, pauses T3 around every read). At entry: T0 = 390 (refresh?),
+  T2 = 10 Hz, **T3 = 125,000 → 800 Hz BIOS tick**, raising VRC5074 source 5 (IP4). Its handler
+  increments `0x8002A270` and runs software timers, including a watchdog that raises a fatal error if
+  the game doesn't wait for a frame (syscall 56) for 20 s.
+- **Vertical blank** at 57 Hz: SIO sub-source 5 → VRC5074 source 10 → IP3. The BIOS handler
+  (`0x800113AC`) acknowledges by clearing/setting SIO control bit 3 and increments the frame counter
+  `0x8002A260` (syscalls 56/57).
+- SIO sub-source 1 (about 785/s in MAME) is the I/O ASIC interrupt; not modelled yet.
+- VRC5074 sources are level-triggered for devices (UART, PCI INTx: SIO, IDE) and edge-latched for
+  timer reloads (cleared by INTCLR).

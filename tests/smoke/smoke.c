@@ -4,6 +4,7 @@
 //
 // usage: smoke <entry_ram.bin> <entry_regs.json> <disk.img> [max_events] [--quiet]
 //   --quiet: don't log every syscall (only text written by the game, and hardware events)
+#include <execinfo.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -12,29 +13,87 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "../../runtime/src/banshee.h"
 #include "../../runtime/src/ide.h"
 #include "../../runtime/src/ioasic.h"
 #include "recomp.h"
 #include "recomp_funcs.h"
 #include "vegas.h"
+#include "../../runtime/src/nile.h"
 
 static jmp_buf g_abort;
+extern uint64_t recomp_proc_switches, recomp_proc_created;
 static long g_events, g_max_events = 400;
 static long g_syscalls;
 static int g_trace_syscalls = 1;
 
+static void dump_call_trace(int n) {
+#ifdef RECOMP_TRACE_CALLS
+  printf("last %d function entries (oldest first):\n", n);
+  for (int i = n; i > 0; --i) {
+    printf(" %08X", recomp_call_ring[(recomp_call_pos - (uint32_t)i) & (RECOMP_CALL_RING - 1)]);
+    if (i % 10 == 1) printf("\n");
+  }
+#else
+  (void)n;
+#endif
+}
+
+/* Text still queued in the BIOS console ring buffer (0x8002BF08: +4 write ptr, +8 read ptr,
+   data at +0xC..+0x10C). Error handlers print with interrupts off, so it never drains. */
+static void dump_console_buffer(void) {
+  const uint32_t base = 0x8002BF08u, data = base + 0xC, end = base + 0x10C;
+  uint32_t wr, rd;
+  memcpy(&wr, recomp_rdram + (base + 4 - 0x80000000u), 4);
+  memcpy(&rd, recomp_rdram + (base + 8 - 0x80000000u), 4);
+  if (wr == rd || wr < data || wr >= end || rd < data || rd >= end) return;
+  char text[300];
+  int n = 0;
+  for (uint32_t p = rd; p != wr && n < (int)sizeof text - 1; p = (p + 1 == end) ? data : p + 1) {
+    const char c = (char)recomp_rdram[p - 0x80000000u];
+    text[n++] = (c == '\n' || c == '\r') ? '|' : (c < 32 || c > 126) ? '.' : c;
+  }
+  text[n] = 0;
+  printf("undrained console text: \"%s\"\n", text);
+}
+
+#ifdef RECOMP_TRACE_CALLS
+void recomp_break_hit(uint32_t addr) {
+  printf("-- break at %08X --\n", addr);
+  dump_call_trace(RECOMP_CALL_RING - 1);
+  printf("-- stopped at break --\n");
+  exit(6);
+}
+#endif
+
 static void summary(const char* why) {
+  g_max_events = 1L << 40; /* don't longjmp out of the summary */
+  nile_uart_flush();
+  dump_console_buffer();
   char b[512];
   int n = snprintf(b, sizeof b,
                    "%s\nsummary: %ld events, %ld syscalls, %llu interrupts delivered, IDE: %llu cmds, "
                    "%llu DMA, %llu sectors read, %llu written, virtual time %.3f s\n"
-                   "sound board: %u words, %u uploads (%u PM + %u DM words), program %s\n",
+                   "sound board: %u words, %u uploads (%u PM + %u DM words), program %s\n"
+                   "banshee: FIFO %s at %06X+%X, %llu FIFO words, %llu 3D reg writes, %llu VRAM writes, %llu status reads\n",
                    why, g_events, g_syscalls, (unsigned long long)g_vegas.interrupts_delivered,
                    (unsigned long long)g_ide_stats.commands, (unsigned long long)g_ide_stats.dma_transfers,
                    (unsigned long long)g_ide_stats.sectors_read,
                    (unsigned long long)g_ide_stats.sectors_written, g_vegas.cop0.cycles / 125e6,
                    g_dcs.words_received, g_dcs.uploads, g_dcs.pm_words, g_dcs.dm_words,
-                   g_dcs.running ? "running" : "not started");
+                   g_dcs.running ? "running" : "not started",
+                   g_banshee_stats.fifo_enabled ? "on" : "off", g_banshee_stats.fifo_base,
+                   g_banshee_stats.fifo_size, (unsigned long long)g_banshee_stats.fifo_words,
+                   (unsigned long long)g_banshee_stats.reg3d_writes,
+                   (unsigned long long)g_banshee_stats.vram_writes,
+                   (unsigned long long)g_banshee_stats.status_reads);
+  if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+  n = snprintf(b, sizeof b, "interrupts by line: IP2 %llu, IP3 %llu, IP4 %llu, IP5 %llu, IP6 %llu, IP7 %llu; "
+               "processes: %llu created, %llu switches\n",
+               (unsigned long long)g_vegas.irq_count[2], (unsigned long long)g_vegas.irq_count[3],
+               (unsigned long long)g_vegas.irq_count[4], (unsigned long long)g_vegas.irq_count[5],
+               (unsigned long long)g_vegas.irq_count[6], (unsigned long long)g_vegas.irq_count[7],
+               (unsigned long long)recomp_proc_created, (unsigned long long)recomp_proc_switches);
   if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
 }
 
@@ -59,6 +118,13 @@ void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
   if (g_trace_syscalls)
     event("syscall %3u @%08X  a0=%08X a1=%08X a2=%08X a3=%08X ra=%08X", code, pc, R32(4), R32(5),
           R32(6), R32(7), R32(31));
+  if (code == 13 && getenv("TRACE_FILES")) { /* open(path, flags) */
+    char path[128];
+    int i = 0;
+    for (; i < 127; ++i) { path[i] = (char)mem_r8(ctx, R32(4) + (uint32_t)i); if (!path[i]) break; }
+    path[i] = 0;
+    printf("        open(\"%s\", %u)\n", path, R32(5));
+  }
   if (code == 20 && R32(6) < 512) { /* write(fd, buf, len): show the text */
     char buf[513];
     uint32_t n = R32(6), i;
@@ -69,8 +135,15 @@ void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
     buf[n] = 0;
     printf("        text(fd %u): \"%s\"\n", R32(4), buf);
   }
+  if (code == 23) { /* exit: show how we got here, then stop (the BIOS would loop forever) */
+    dump_call_trace(400);
+    event("game called exit(%d)", (int)R32(4));
+    longjmp(g_abort, 5);
+  }
   if (!recomp_bios_syscall(ctx, code)) event("syscall %u has no BIOS handler", code);
   if (g_trace_syscalls) printf("        -> v0=%08X\n", R32(2));
+  if (getenv("TRACE_FILES") && (code == 13 || code == 14 || code == 0 || code == 24))
+    printf("        file syscall %u -> v0=%08X\n", code, R32(2));
   vegas_poll_interrupts(ctx);
 }
 void recomp_break(RecompContext* ctx, uint32_t code, uint32_t pc) {
@@ -88,6 +161,10 @@ void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what) {
 
 static void on_alarm(int sig) {
   (void)sig;
+  /* Host backtrace: the generated func_XXXXXXXX frames show where the guest is spinning. */
+  void* frames[48];
+  int n = backtrace(frames, 48);
+  backtrace_symbols_fd(frames, n, 1);
   summary("-- timeout (10 s wall clock) --");
   _exit(4);
 }
@@ -133,13 +210,22 @@ int main(int argc, char** argv) {
   fclose(f);
 
   vegas_log = event;
-  /* VRC5074 register dump lives next to the register JSON (entry_nile.bin). */
-  char nile_path[1024];
-  snprintf(nile_path, sizeof nile_path, "%s", argv[2]);
-  char* slash = strrchr(nile_path, '/');
-  snprintf(slash ? slash + 1 : nile_path, sizeof nile_path - (size_t)(slash ? slash + 1 - nile_path : 0),
-           "entry_nile.bin");
-  if (vegas_init(argv[3], nile_path) != 0) return 1;
+#ifdef RECOMP_TRACE_CALLS
+  if (getenv("BREAK_AT")) recomp_break_addr = (uint32_t)strtoul(getenv("BREAK_AT"), NULL, 16);
+#endif
+  extern int ide_trace, ide_discard_writes;
+  ide_discard_writes = getenv("IDE_DISCARD_WRITES") != NULL;
+  ide_trace = getenv("TRACE_IDE") != NULL;
+  extern int ioasic_trace;
+  ioasic_trace = getenv("TRACE_IOASIC") != NULL;
+  /* VRC5074 and SIO register dumps live next to the register JSON. */
+  char dir[1024], nile_path[1100], sio_path[1100];
+  snprintf(dir, sizeof dir, "%s", argv[2]);
+  char* slash = strrchr(dir, '/');
+  if (slash) slash[1] = 0; else dir[0] = 0;
+  snprintf(nile_path, sizeof nile_path, "%sentry_nile.bin", dir);
+  snprintf(sio_path, sizeof sio_path, "%sentry_sio.bin", dir);
+  if (vegas_init(argv[3], nile_path, sio_path) != 0) return 1;
 
   RecompContext ctx;
   memset(&ctx, 0, sizeof ctx);

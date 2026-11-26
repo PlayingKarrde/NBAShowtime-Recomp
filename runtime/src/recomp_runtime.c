@@ -8,6 +8,12 @@
 
 uint8_t* recomp_rdram;
 
+#ifdef RECOMP_TRACE_CALLS
+uint32_t recomp_call_ring[RECOMP_CALL_RING];
+uint32_t recomp_call_pos;
+uint32_t recomp_break_addr;
+#endif
+
 static void missing_function(RecompContext* ctx) {
   recomp_unhandled(ctx, (uint32_t)ctx->r[31], "indirect call to unknown address");
 }

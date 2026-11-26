@@ -20,6 +20,15 @@ int nile_handles(uint32_t phys);
 uint32_t nile_read(uint32_t phys, int size);
 void nile_write(uint32_t phys, uint32_t value, int size);
 
+/* PCI window mode (VRC5074 PCIINIT1): non-zero while the window does configuration cycles. */
+int nile_pci_is_config(void);
+
+/* Called as virtual time advances: timer reloads raise their interrupt sources. */
+void nile_advance(void);
+
+/* Flush a partial UART output line to the log. */
+void nile_uart_flush(void);
+
 /* Drive an interrupt source (level). */
 void nile_set_source(int source, int asserted);
 

@@ -191,8 +191,15 @@ static void write16(uint32_t off, uint16_t v) {
   }
 }
 
+int ioasic_trace; /* debug: log register accesses */
+
 uint32_t ioasic_read(uint32_t p, int size) {
   const uint32_t off = p - IOASIC_BASE;
+  if (ioasic_trace) {
+    uint32_t v = size == 4 ? (read16(off) | ((uint32_t)read16(off + 2) << 16)) : read16(off & ~1u);
+    vegas_log("ioasic: read%d +%02X -> %04X", size * 8, off, v);
+    return size == 1 ? ((off & 1) ? v >> 8 : v & 0xFF) : v;
+  }
   if (size == 4) return read16(off) | ((uint32_t)read16(off + 2) << 16);
   const uint16_t v = read16(off & ~1u);
   return size == 1 ? ((off & 1) ? v >> 8 : v & 0xFF) : v;
@@ -200,6 +207,7 @@ uint32_t ioasic_read(uint32_t p, int size) {
 
 void ioasic_write(uint32_t p, uint32_t value, int size) {
   const uint32_t off = p - IOASIC_BASE;
+  if (ioasic_trace) vegas_log("ioasic: write%d +%02X <- %04X", size * 8, off, value);
   if (size == 4) {
     write16(off, (uint16_t)value);
     write16(off + 2, (uint16_t)(value >> 16));

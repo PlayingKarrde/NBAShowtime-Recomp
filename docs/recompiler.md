@@ -56,20 +56,45 @@ Runs the recompiled BIOS and game from the game's entry point on the runtime mac
 (`runtime/src/vegas_machine.c`: CP0 and interrupts; `ide.c`: disk; `nile.c`: VRC5074 interrupt
 controller and UART). See [hardware.md](hardware.md).
 
-**Current state:**
-- syscall 4 reads the environment file from the disk through the BIOS file system, the IDE model and
-  the DMA completion interrupt;
-- the game's console output appears over the emulated UART (about 800 UART interrupts delivered
-  through the recompiled BIOS): environment variables, the welcome banner, the code CRC check, the
-  stack check;
-- the Midway I/O ASIC (0xA4800000: control, select, inputs, DIP switches) is modelled. The DCS2 sound
-  boot monitor is exact against a MAME trace (`./build/ioasic_replay work/dumps/sound_trace.txt`), but the
-  game only boots the sound board after Glide init, so the smoke test doesn't reach it yet;
-- Glide probes the PCI memory windows (0xB0400000…0xB4000000) and VRC5074 +0x200 for the Voodoo
-  Banshee, finds nothing, and the game halts in its Glide error handler.
+**Current state** (`./build/smoke … 400 --quiet`):
+- Glide finds and initialises the Banshee ("SST board 0: 3Dfx Banshee"), opens its command FIFO and
+  streams about 160,000 FIFO words (consumed but not rendered yet).
+- vblank (57 Hz) and the BIOS tick (800 Hz) drive the frame counter and timers; NVRAM is read and
+  validated.
+- The game's process scheduler runs game processes on host fibers (see below).
+- The sound board boots exactly like the real one (8 uploads, all checksums right) and the program
+  starts.
+- The game loads fonts, CMOS formats and the sound program files from disk, and creates its
+  audits/adjustments files (writes work).
+- **Blocker: sound bank loading.** For each `.BNK` bank the loader (`0x801E455C`) sends the data to
+  the running sound program and waits for its replies (`0x801E3D78`). The stand-in board can't answer
+  (the real answers come from the DSP program), so the loader retries and leaks a file handle each
+  time. Once the BIOS handle table is full, every open fails, `GEN_SEQ.ANI` can't load, and the game
+  parks in an error loop (`0x80115480`).
 
-**Next:** PCI configuration and the Banshee probe, which leads into the Glide replacement. After that:
-timers/vblank (IP3/IP4 sources), then real sound (ADSP-2104).
+## Game processes (runtime/src/proc.c)
+The game's scheduler (main loop `0x801B4270`) resumes a process by restoring its registers, swapping
+`sp` with `k1` and doing `jr ra` into it (`0x801B4760`). Processes give control back from sleep
+(`0x801B3F98`, 407 call sites) or exit (`0x801B4088`) by swapping stacks and jumping into the middle of
+the scheduler (`0x801B4764`). C can't express that, so:
+- every game process runs on its own **host fiber** (ucontext on Linux, Fibers on Windows);
+- the generator emits `recomp_proc_switch_in` at the scheduler's `jr ra` (then continues at
+  0x801B4764) and `recomp_proc_switch_out` at the jumps back;
+- a fiber is resumed when its saved resume address and stack match what the scheduler restored;
+  otherwise a new fiber starts at that address. All guest register save/restore stays guest code.
+
+## Timing (loop edges)
+Every backward branch charges its body size to an instruction budget (`RECOMP_LOOP`, 2,223 edges).
+When the budget runs out the runtime advances virtual time and delivers interrupts. This lets loops
+that only poll RAM (e.g. waiting for the vblank counter) see interrupts, and keeps timing
+deterministic (useful for netplay later).
+
+## Debugging aids
+- `cmake -DRECOMP_TRACE_CALLS=ON` records every function entry in a ring buffer. The smoke test dumps
+  it at `exit()` or at `BREAK_AT=<hex address>`.
+- Smoke env vars: `TRACE_FILES` (open/read/close), `TRACE_IDE` (disk commands), `TRACE_IOASIC`,
+  `IDE_DISCARD_WRITES`. On timeout it prints a host backtrace with `func_XXXXXXXX` frames, and any
+  console text still queued.
 
 Earlier run, with stub syscalls:
 Loads the MAME RAM and register snapshot and calls `func_80100000` (crt0) with stub hooks
