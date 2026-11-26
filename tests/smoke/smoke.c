@@ -16,6 +16,8 @@
 #include "../../runtime/src/banshee.h"
 #include "../../runtime/src/dcs2.h"
 #include "../../runtime/src/ide.h"
+#include "../../runtime/src/voodoo3d.h"
+#include "../../runtime/src/raster_sw.h"
 #include "../../runtime/src/ioasic.h"
 #include "recomp.h"
 #include "recomp_funcs.h"
@@ -69,6 +71,20 @@ void recomp_break_hit(uint32_t addr) {
 #endif
 
 extern uint64_t g_fpe_count;
+static int g_frames_dumped;
+static void summary(const char* why);
+static void dump_frame(void* user, uint64_t frame, const uint8_t* rgba, int w, int h) {
+  (void)user;
+  char path[512];
+  snprintf(path, sizeof path, "%s/frame_%06llu.png", getenv("FRAME_DUMP"), (unsigned long long)frame);
+  raster_sw_write_png(path, rgba, w, h);
+  extern uint64_t g_sw_stats[8];
+  fprintf(stderr, "[frame] %s (virtual %.2f s) yorigin %u px in %llu chroma %llu amask %llu atest %llu depth %llu written %llu off %llu\n", path, g_vegas.cop0.cycles / 125e6,
+          (banshee_io_reg(0x10) >> 18) & 0xFFF, (unsigned long long)g_sw_stats[0], (unsigned long long)g_sw_stats[1], (unsigned long long)g_sw_stats[2],
+          (unsigned long long)g_sw_stats[3], (unsigned long long)g_sw_stats[4], (unsigned long long)g_sw_stats[5], (unsigned long long)g_sw_stats[6]);
+  memset(g_sw_stats, 0, sizeof g_sw_stats);
+  if (getenv("FRAME_MAX") && ++g_frames_dumped >= atoi(getenv("FRAME_MAX"))) { summary("-- frame limit --"); _exit(0); }
+}
 static void summary(const char* why) {
   g_max_events = 1L << 40; /* don't longjmp out of the summary */
   nile_uart_flush();
@@ -98,6 +114,24 @@ static void summary(const char* why) {
                (unsigned long long)g_vegas.irq_count[6], (unsigned long long)g_vegas.irq_count[7],
                (unsigned long long)recomp_proc_created, (unsigned long long)recomp_proc_switches);
   if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+  {
+    n = snprintf(b, sizeof b, "3D: %llu triangles (%llu culled), %llu fast fills, %llu swaps, %llu texture words, "
+                 "%llu 3D LFB words; packets 0-5: %llu %llu %llu %llu %llu %llu\n",
+                 (unsigned long long)g_v3d_stats.triangles, (unsigned long long)g_v3d_stats.culled,
+                 (unsigned long long)g_v3d_stats.fastfills, (unsigned long long)g_v3d_stats.swaps,
+                 (unsigned long long)g_v3d_stats.texture_words, (unsigned long long)g_v3d_stats.lfb_words,
+                 (unsigned long long)g_v3d_stats.packets[0], (unsigned long long)g_v3d_stats.packets[1],
+                 (unsigned long long)g_v3d_stats.packets[2], (unsigned long long)g_v3d_stats.packets[3],
+                 (unsigned long long)g_v3d_stats.packets[4], (unsigned long long)g_v3d_stats.packets[5]);
+    if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+    if (getenv("V3D_STATS")) {
+      for (int f = 0; f < 16; ++f)
+        if (g_v3d_stats.tex_format_tris[f]) printf("  textured tris, format %d: %llu\n", f, (unsigned long long)g_v3d_stats.tex_format_tris[f]);
+      for (int r = 0; r < V3D_REG_COUNT; ++r)
+        if (g_v3d_stats.reg_writes[r]) printf("  reg %03X: %llu writes, last %08X\n", r * 4, (unsigned long long)g_v3d_stats.reg_writes[r], v3d_reg_read((uint32_t)r));
+      fflush(stdout);
+    }
+  }
   if (dcs2_present()) {
     n = snprintf(b, sizeof b, "DCS2 DSP: %llu instructions, %llu host words in, %llu replies, program booted: %s, "
                  "%llu audio words; FP exceptions taken: %llu\n",
@@ -239,6 +273,12 @@ int main(int argc, char** argv) {
   const char* dcs_rom = getenv("DCS_ROM") ? getenv("DCS_ROM") : "work/bios/vegassio.bin";
   if (getenv("NO_DSP")) dcs_rom = NULL;
   if (vegas_init(argv[3], nile_path, sio_path, dcs_rom) != 0) return 1;
+  if (getenv("FRAME_DUMP")) {
+    /* FRAME_DUMP=dir [FRAME_START=n] [FRAME_EVERY=n] [FRAME_SCALE=s] [FRAME_MAX=n] */
+    raster_sw_init(getenv("FRAME_SCALE") ? atoi(getenv("FRAME_SCALE")) : 1,
+                   getenv("FRAME_START") ? strtoull(getenv("FRAME_START"), NULL, 0) : 0,
+                   getenv("FRAME_EVERY") ? strtoull(getenv("FRAME_EVERY"), NULL, 0) : 60, dump_frame, NULL);
+  }
 
   RecompContext ctx;
   memset(&ctx, 0, sizeof ctx);

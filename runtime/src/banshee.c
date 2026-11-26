@@ -5,8 +5,10 @@
 #include <string.h>
 
 #include "vegas.h"
+#include "voodoo3d.h"
 
 BansheeStats g_banshee_stats;
+static void fifo_reset(void);
 uint8_t* g_banshee_vram;
 
 /* BAR0 sub-ranges (byte offsets) */
@@ -40,6 +42,8 @@ void banshee_init(void) {
   memset(&g_banshee_stats, 0, sizeof g_banshee_stats);
   if (!g_banshee_vram) g_banshee_vram = calloc(1, BANSHEE_VRAM_SIZE);
   else memset(g_banshee_vram, 0, BANSHEE_VRAM_SIZE);
+  fifo_reset();
+  v3d_init(g_banshee_vram, BANSHEE_VRAM_SIZE - 1);
 
   /* PCI configuration as left by the BIOS (measured in MAME after boot). */
   b.config[0x00 / 4] = 0x0003121Au;  /* 3dfx Banshee */
@@ -56,6 +60,8 @@ void banshee_init(void) {
   b.io[0x5C / 4] = 0x02210901u; /* vidProcCfg */
   b.io[0x98 / 4] = 0x00180200u; /* vidScreenSize: 512 x 384 */
 }
+
+uint32_t banshee_io_reg(uint32_t byte_off) { return byte_off < IOREG_END ? b.io[byte_off / 4] : 0; }
 
 /* ---- PCI config ---- */
 uint32_t banshee_config_read(uint32_t reg) { return reg < 64 ? b.config[reg] : 0; }
@@ -95,12 +101,128 @@ static int in_fifo(uint32_t off) {
          off < g_banshee_stats.fifo_base + g_banshee_stats.fifo_size;
 }
 
-/* A word written into the FIFO region. The packets are consumed instantly for now: the read
-   pointer follows the writes, so Glide always sees free space. (Packet parsing feeds the
-   renderer later.) */
+/* ---- command FIFO parsing ----
+   Glide writes packets sequentially into the FIFO region of VRAM and wraps with a JMP packet.
+   Complete packets are executed as soon as their last word has been written, so the read
+   pointer stays right behind the writer and Glide always sees free space. */
+static struct {
+  uint32_t parse;   /* next packet header (VRAM byte offset) */
+  uint32_t written; /* end of the contiguous run of words written from `parse` */
+  int synced;
+} fq;
+
+static uint32_t vram32(uint32_t off) {
+  uint32_t w;
+  memcpy(&w, g_banshee_vram + (off & (BANSHEE_VRAM_SIZE - 1) & ~3u), 4);
+  return w;
+}
+
+static void reg2d_fifo_write(uint32_t regnum, uint32_t data) {
+  b.reg2d[regnum & 0xFF] = data;
+  g_banshee_stats.reg2d_writes++;
+}
+
+static void fifo_register_write(uint32_t target, uint32_t data) {
+  if (target & 0x800u) reg2d_fifo_write(target & 0xFF, data); /* bit 11: 2D register space */
+  else v3d_reg_write(target & 0xFF, (target >> 8) & 0xF, data);
+}
+
+/* Words a packet needs (header included), or 0 if unknown. */
+static uint32_t packet_size(uint32_t cmd) {
+  switch (cmd & 7) {
+    case 0: return ((cmd >> 3) & 7) == 4 ? 2 : 1;
+    case 1: return 1 + (cmd >> 16);
+    case 2: return 1 + (uint32_t)__builtin_popcount(cmd >> 3);
+    case 3: return 1 + v3d_packet3_size(cmd);
+    case 4: return 1 + (uint32_t)__builtin_popcount((cmd >> 15) & 0x3FFF) + ((cmd >> 29) & 7);
+    case 5: return 2 + ((cmd >> 3) & 0x7FFFF);
+    default: return 0;
+  }
+}
+
+static uint32_t body_buf[0x10000];
+
+static void execute_packet(uint32_t at, uint32_t cmd, uint32_t size) {
+  g_v3d_stats.packets[cmd & 7]++;
+  for (uint32_t i = 1; i < size && i <= 0x10000; ++i) body_buf[i - 1] = vram32(at + 4 * i);
+  const uint32_t* w = body_buf;
+  switch (cmd & 7) {
+    case 0:
+      if (((cmd >> 3) & 7) == 3) { /* JMP local frame buffer */
+        fq.parse = ((cmd >> 6) & 0x7FFFFFu) << 2;
+        fq.written = fq.parse;
+        return;
+      }
+      if ((cmd >> 3) & 7) vegas_log("banshee: unsupported FIFO jump type %u", (cmd >> 3) & 7);
+      break;
+    case 1: {
+      uint32_t target = (cmd >> 3) & 0xFFF;
+      const uint32_t inc = (cmd >> 15) & 1;
+      for (uint32_t i = 0; i < (cmd >> 16); ++i, target += inc) fifo_register_write(target, w[i]);
+      break;
+    }
+    case 2: {
+      uint32_t n = 0;
+      for (int bit = 3; bit < 32; ++bit)
+        if (cmd & (1u << bit)) reg2d_fifo_write(2 + (uint32_t)(bit - 3), w[n++]); /* from clip0Min */
+      break;
+    }
+    case 3: v3d_packet3(cmd, w); break;
+    case 4: {
+      uint32_t target = (cmd >> 3) & 0xFFF, n = 0;
+      for (int bit = 15; bit <= 28; ++bit, ++target)
+        if (cmd & (1u << bit)) fifo_register_write(target, w[n++]);
+      break;
+    }
+    case 5: {
+      const uint32_t count = (cmd >> 3) & 0x7FFFF;
+      uint32_t target = (w[0] & 0x3FFFFFFFu) / 4;
+      switch (cmd >> 30) {
+        case 0:
+          for (uint32_t i = 0; i < count; ++i, ++target)
+            memcpy(g_banshee_vram + ((target * 4) & (BANSHEE_VRAM_SIZE - 1)), &w[1 + i], 4);
+          g_banshee_stats.vram_writes += count;
+          break;
+        case 2: for (uint32_t i = 0; i < count; ++i) v3d_lfb_write(target + i, w[1 + i], 0xFFFFFFFFu); break;
+        case 3: for (uint32_t i = 0; i < count; ++i) v3d_texture_write(target + i, w[1 + i]); break;
+        default: vegas_log("banshee: unsupported FIFO packet 5 space %u", cmd >> 30); break;
+      }
+      break;
+    }
+    default: break;
+  }
+  fq.parse = at + size * 4;
+}
+
+static void fifo_run(void) {
+  for (int guard = 0; guard < 100000; ++guard) {
+    if (fq.written - fq.parse < 4 || fq.written <= fq.parse) return;
+    const uint32_t cmd = vram32(fq.parse);
+    const uint32_t size = packet_size(cmd);
+    if (!size) {
+      vegas_log("banshee: unknown FIFO packet %08X at %06X", cmd, fq.parse);
+      fq.parse += 4;
+      continue;
+    }
+    if (fq.written - fq.parse < size * 4) return; /* wait for the rest */
+    execute_packet(fq.parse, cmd, size);
+  }
+}
+
+static void fifo_reset(void) { memset(&fq, 0, sizeof fq); }
+
 static void fifo_word(uint32_t off) {
   g_banshee_stats.fifo_words++;
-  b.fifo_rdptr = off + 4;
+  if (!fq.synced) { fq.parse = off; fq.written = off; fq.synced = 1; }
+  if (off == fq.written) fq.written = off + 4;
+  else if (off == fq.parse) fq.written = off + 4; /* writer restarted at the parse point */
+  else { /* out of order: resynchronise on this word */
+    vegas_log("banshee: FIFO write at %06X, expected %06X (parse %06X)", off, fq.written, fq.parse);
+    fq.parse = off;
+    fq.written = off + 4;
+  }
+  fifo_run();
+  b.fifo_rdptr = fq.parse;
 }
 
 static uint32_t cmd_read(uint32_t off) {
@@ -118,8 +240,8 @@ static void cmd_write(uint32_t off, uint32_t v) {
   switch (off) {
     case CMD_BASEADDR0:
     case CMD_BASESIZE0: fifo_update_config(); break;
-    case CMD_RDPTRL0: b.fifo_rdptr = v; break;
-    case CMD_BUMP0: b.fifo_rdptr += v * 4; g_banshee_stats.fifo_words += v; break;
+    case CMD_RDPTRL0: b.fifo_rdptr = v; fq.parse = fq.written = v; fq.synced = 1; break;
+    case CMD_BUMP0: vegas_log("banshee: FIFO bump mode not supported (%u)", v); break;
     default: break;
   }
 }
@@ -171,8 +293,15 @@ static void reg_write(uint32_t off, uint32_t v, int size) {
     b.reg2d[(a - REG2D_BASE) / 4] = merge(b.reg2d[(a - REG2D_BASE) / 4], v, off, size);
     g_banshee_stats.reg2d_writes++;
   } else if (a >= REG3D_BASE && a < REG3D_END) {
-    b.reg3d[(a - REG3D_BASE) / 4] = merge(b.reg3d[(a - REG3D_BASE) / 4], v, off, size);
+    const uint32_t w = (a - REG3D_BASE) / 4;
+    b.reg3d[w] = merge(b.reg3d[w], v, off, size);
     g_banshee_stats.reg3d_writes++;
+    uint32_t data = b.reg3d[w];
+    if (w & (1u << 18)) data = __builtin_bswap32(data);               /* byte-swizzled alias */
+    if (w & (1u << 19)) vegas_log("banshee: remapped 3D register write +%06X", off); /* rare */
+    v3d_reg_write(w & 0xFF, (w >> 8) & 0xF, data);
+  } else if (a >= 0x600000u && a < 0x800000u) {
+    v3d_texture_write((a - 0x600000u) / 4, v); /* TMU 0 texture download window */
   } else {
     vegas_log("banshee: write of unknown register +%06X <- %08X", off, v);
   }

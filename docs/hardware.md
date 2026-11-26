@@ -133,3 +133,37 @@ sound-port trace (400k words) through the emulated board. **All 120 replies matc
 `tools/mame/trace_dsp.lua` records MAME's DSP instruction trace for comparison.
 
 Without the boot ROM the I/O ASIC falls back to the stand-in board (boot monitor only).
+
+## Voodoo Banshee 3D (runtime/src/banshee.c, voodoo3d.c, raster_sw.c)
+Glide streams everything through command FIFO 0 (a 256 KB ring in VRAM at `0xE9E000`, wrapped
+with a JMP packet). `banshee.c` executes each packet as soon as its last word is written:
+
+| Packet | Use in this game |
+|---|---|
+| 0 | JMP back to the FIFO base |
+| 1 | register runs (bit 11 of the register address selects 2D space) |
+| 3 | setup-unit vertices: float X/Y, packed or float ARGB, Z, Wb/W0, S0/T0; strips, fans, lists |
+| 4 | masked register writes (render state) |
+| 5 | texture downloads (space 3, linear from `texBaseAddr & 0xFFFFF0`) |
+
+Observed state: 512x384, three colour buffers plus one aux (depth) buffer, a W-buffer with
+the "less" depth function, alpha blending (src alpha / 1 - src alpha), alpha test as cut-outs,
+textures in RGB565 / ARGB1555 / ARGB4444 modulated by `color0`, no fog, no 3D LFB access.
+Frames start with a fast fill and end with `swapbufferCMD`; the displayed buffer is
+`leftOverlayBuf`.
+
+Facts used by the renderer:
+- The iterated W is 16.48 fixed point. The W-buffer value is a 16-bit pseudo-float: the
+  leading-zero count minus 16 in bits 15:12, then the inverted 12 bits below the leading one.
+- Texel coordinates are (s/w) / (1/w) in LOD 0 units (LOD 0 is 256 texels on the long side).
+  Mip levels follow LOD 0 in VRAM, each at least 4 texels from LOD 3 down.
+- The game uses the lower-left origin (fbzMode bit 17). Rows are `yorigin - y`, with
+  `yorigin` = miscInit0 bits 29:18 (383).
+- Palette entries are written through nccTable 0 I/Q registers with bit 31 set: the index is
+  bits 30:24 shifted left 1, plus the register's low bit.
+
+`raster_sw.c` is the reference software renderer. It draws at any integer multiple of
+512x384 into private RGBA8 and depth buffers and implements the whole pixel pipeline. The
+smoke test dumps frames with
+`FRAME_DUMP=dir [FRAME_START=n FRAME_EVERY=n FRAME_SCALE=s FRAME_MAX=n]`.
+

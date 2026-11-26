@@ -66,7 +66,9 @@ Runs the recompiled BIOS and game from the game's entry point on the runtime mac
 controller and UART). See [hardware.md](hardware.md).
 
 **Current state** (`SMOKE_SECONDS=300 ./build/smoke … 2000 --quiet`, about 780 s of virtual time):
-- Glide initialises the Banshee and streams command-FIFO packets (940 M words, not rendered yet).
+- Glide initialises the Banshee; its command FIFO is parsed and rendered by the software reference
+  renderer (attract mode, player intros and in-game play render correctly, also at 2x). A host GPU
+  renderer / window is next.
 - vblank, the BIOS tick, NVRAM, disk reads/writes and the process scheduler (about 960 processes created,
   560k switches) all work; the game keeps streaming from disk (about 1 M sectors), apparently looping
   its attract sequence.

@@ -26,6 +26,9 @@ int banshee_io_handles(uint32_t phys);
 uint32_t banshee_io_read(uint32_t phys, int size);
 void banshee_io_write(uint32_t phys, uint32_t value, int size);
 
+/* init/video register (byte offset 0x00-0xFC), e.g. miscInit0 (Y origin), vidScreenSize */
+uint32_t banshee_io_reg(uint32_t byte_off);
+
 typedef struct {
   uint64_t fifo_words;       /* command FIFO words written by Glide */
   uint64_t reg3d_writes;     /* direct (non-FIFO) 3D register writes */
