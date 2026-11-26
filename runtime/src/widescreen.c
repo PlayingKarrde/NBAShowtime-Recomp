@@ -10,6 +10,11 @@
 // original coordinates. The drawing projection (801A12A8, centre 0x801FA5F8) is untouched.
 // The per-triangle clipper (801A2C48) rejects, trivially accepts and clips against x = 0 and
 // x = 512; its 512s are data (patched here) and its 0s are code (patched in the recompiler).
+//
+// Players are also culled as a whole before any of that (80135A40): in view space, a player is
+// hidden when |x| > z * k, with k ending in a factor of 1.05 (0x801F2458, read only there) that
+// fits the 4:3 view. Hor+ keeps the focal length, so the visible half-width at any depth grows by
+// aspect / (4/3); scaling that factor by the same amount keeps players at the edges drawn.
 #include "widescreen.h"
 
 #include <string.h>
@@ -17,6 +22,14 @@
 #include "recomp.h"
 
 float recomp_ws_xmin;
+
+static void mulf(uint32_t vaddr, float k) {
+  uint8_t* p = recomp_rdram + (vaddr & 0x1FFFFFFFu);
+  float f;
+  memcpy(&f, p, 4);
+  f *= k;
+  memcpy(p, &f, 4);
+}
 
 static void addf(uint32_t vaddr, float delta) {
   uint8_t* p = recomp_rdram + (vaddr & 0x1FFFFFFFu);
@@ -39,4 +52,5 @@ void widescreen_patch(float aspect) {
   addf(0x801FA648u, d); /* all vertices x >= 512: reject */
   addf(0x801FA64Cu, d); /* trivial accept x < 512 */
   addf(0x801FA65Cu, d); /* right clip edge */
+  mulf(0x801F2458u, aspect * 0.75f); /* player visibility: horizontal view-space margin */
 }

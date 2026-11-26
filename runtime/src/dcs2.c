@@ -19,6 +19,7 @@ enum {
 #define AUDIO_RING (1 << 16) /* stereo frames */
 
 static int g_log_io; /* debug: DCS_LOG_IO logs latch traffic */
+static int g_no_hle; /* debug: DCS_NO_HLE leaves bank uploads to the sound program's own loader */
 static int g_trace_cmd = -1;
 static uint64_t g_trace_after; /* DCS_TRACE_AFTER: only trigger after this DSP cycle */   /* debug: log instructions after the host writes this value */
 static int g_trace_left;
@@ -60,6 +61,19 @@ static struct {
   uint32_t audio_wr, audio_rd;
   int16_t pending_left;
   int have_left;
+  /* Bank uploads (55D0/55D1) are handled by the board model, as MAME does (see dcs2_data_w). */
+  struct {
+    int armed;           /* the sound program is running (host sent 002A after the boot upload) */
+    int boot_state;      /* passive tracking of the boot monitor's 001A uploads */
+    uint32_t boot_left;
+    int state;           /* 0 idle, 1-4 address words, 5 data */
+    uint32_t start, stop, left;
+    uint16_t sum;
+    int reply_pending;
+    uint64_t reply_at;   /* DSP cycle at which the checksum reply may be posted */
+    int held;            /* a DSP reply written during the upload, released after the checksum */
+    uint16_t held_data, held_control;
+  } up;
 } d;
 
 /* ---------------------------------------------------------------- SDRC decode */
@@ -185,7 +199,7 @@ static uint16_t dm_read(void* u, uint16_t a) {
       if (g_log_io) printf("dcs2 @%llu: DSP reads input %04X (pc %04X)\n", (unsigned long long)d.dsp_cycles, d.input_data, d.cpu.pc);
       return d.input_data;
     case 0x0402: d.output_control_read = d.dsp_cycles; return d.output_control;
-    case 0x0403: return (uint16_t)((d.input_full ? 0x80 : 0) | (d.output_full ? 0 : 0x40) | 0x08 /* FIFO empty */);
+    case 0x0403: return (uint16_t)((d.input_full ? 0x80 : 0) | ((d.output_full || d.up.held) ? 0 : 0x40) | 0x08 /* FIFO empty */);
     case 0x0404: case 0x0405: case 0x0406: case 0x0407: return 0xFFFF; /* FIFO: not used */
     case 0x0480: case 0x0481: case 0x0482: case 0x0483: return sdrc_read(a - 0x0480);
     default: return 0xFFFF;
@@ -207,6 +221,12 @@ static void dm_write(void* u, uint16_t a, uint16_t v) {
       break;
     case 0x0401:
       if (g_log_io) printf("dcs2 @%llu: DSP replies %04X (pc %04X)\n", (unsigned long long)d.dsp_cycles, v, d.cpu.pc);
+      if (d.up.state || d.up.reply_pending) { /* upload in progress: the host expects its checksum next */
+        d.up.held = 1;
+        d.up.held_data = v;
+        d.up.held_control = d.output_control;
+        break;
+      }
       d.output_data = v;
       d.output_full = 1;
       g_dcs2_stats.output_writes++;
@@ -368,6 +388,22 @@ void dcs2_sync(uint64_t now) {
      each increment would starve the DSP. */
   const uint64_t target = (now / 125u) * 16u + ((now % 125u) * 16u) / 125u;
   if (target > d.dsp_cycles) run_cycles(target);
+  if (d.up.reply_pending && d.dsp_cycles >= d.up.reply_at && !d.output_full) {
+    d.up.reply_pending = 0;
+    if (g_log_io) printf("dcs2 @%llu: upload checksum %04X\n", (unsigned long long)d.dsp_cycles, d.up.sum);
+    d.output_data = d.up.sum;
+    d.output_full = 1;
+    d.output_control = (uint16_t)((d.output_control & 0x00FF) | 0x0300);
+    g_dcs2_stats.output_writes++;
+  }
+  if (d.up.held && !d.up.state && !d.up.reply_pending && !d.output_full) {
+    d.up.held = 0;
+    if (g_log_io) printf("dcs2 @%llu: releases held reply %04X\n", (unsigned long long)d.dsp_cycles, d.up.held_data);
+    d.output_data = d.up.held_data;
+    d.output_control = (uint16_t)((d.output_control & 0x00FF) | (d.up.held_control & 0xFF00));
+    d.output_full = 1;
+    g_dcs2_stats.output_writes++;
+  }
 }
 
 /* ---------------------------------------------------------------- host interface */
@@ -378,6 +414,7 @@ static void board_reset(void) {
   d.timer_ignore = 0;
   d.sport_period = 0;
   d.sport0_next = 0;
+  memset(&d.up, 0, sizeof d.up);
   adsp_reset(&d.cpu);
   boot();
 }
@@ -394,13 +431,73 @@ void dcs2_reset_line(int run, uint64_t now) {
   }
 }
 
+/* Bank uploads. After the boot program is running, the host loads sound data with 55D0/55D1,
+   start and stop addresses (two words each) and stop - start + 1 data words, then reads back
+   their 16-bit sum. The sound program's own loader swaps its command interrupt vector around the
+   transfer and only yields to the mixer between blocks, which makes the result depend on exact
+   host/DSP timing: a command written while the vector is swapped is lost. Like MAME (dcs.cpp,
+   preprocess_stage_2), the board model writes the data straight to sound DRAM and posts the
+   checksum itself; the DSP never sees the transfer and keeps mixing.
+   The game also overwrites sound data that is still playing (the matchup music, when the
+   team banks load), and the DSP's decoder then queues a status reply (EDDE). Read in place of
+   the checksum, it makes the game reload the bank one sound directory slot further on. Replies
+   the DSP writes during an upload are therefore held until the host has taken the checksum; the
+   game reads stray replies away after each bank anyway. Returns 1 if the word was consumed. */
+static int upload_write(uint16_t v) {
+  if (g_no_hle) return 0;
+  if (!d.up.armed) { /* follow the boot monitor's 001A uploads so their data isn't misread */
+    switch (d.up.boot_state) {
+      case 0:
+        if (v == 0x001A) d.up.boot_state = 1;
+        else if (v == 0x002A) d.up.armed = 1; /* boot the uploaded program */
+        break;
+      case 1: d.up.start = v; d.up.boot_state = 2; break;
+      case 2: d.up.stop = v; d.up.boot_state = 3; break;
+      case 3:
+        d.up.boot_left = (d.up.stop - d.up.start + 1) & 0xFFFF;
+        if (v == 0) d.up.boot_left *= 2; /* program memory: two words per instruction */
+        d.up.boot_state = d.up.boot_left ? 4 : 0;
+        break;
+      case 4: if (--d.up.boot_left == 0) d.up.boot_state = 0; break;
+    }
+    return 0;
+  }
+  switch (d.up.state) {
+    case 0:
+      if (v != 0x55D0 && v != 0x55D1) return 0;
+      d.up.state = 1;
+      return 1;
+    case 1: d.up.start = (uint32_t)v << 16; d.up.state = 2; return 1;
+    case 2: d.up.start |= v; d.up.state = 3; return 1;
+    case 3: d.up.stop = (uint32_t)v << 16; d.up.state = 4; return 1;
+    case 4:
+      d.up.stop |= v;
+      if (g_log_io) printf("dcs2 @%llu: upload %06X-%06X\n", (unsigned long long)d.dsp_cycles, d.up.start, d.up.stop);
+      d.up.left = d.up.stop - d.up.start + 1;
+      d.up.sum = 0;
+      d.up.state = 5;
+      return 1;
+    default:
+      d.dram[d.up.start++ & 0x1FFFFF] = v;
+      d.up.sum = (uint16_t)(d.up.sum + v);
+      if (--d.up.left == 0) {
+        d.up.state = 0;
+        d.up.reply_pending = 1;
+        d.up.reply_at = d.dsp_cycles + 16; /* ~1 us */
+      }
+      return 1;
+  }
+}
+
 void dcs2_data_w(uint16_t v, uint64_t now) {
   if (!d.present) return;
   dcs2_sync(now);
+  if (!d.in_reset && upload_write(v)) { g_dcs2_stats.host_writes++; return; }
   if (g_log_io) printf("dcs2 @%llu: host writes %04X (full %d, pc %04X imask %02X latch %d)\n", (unsigned long long)d.dsp_cycles, v, d.input_full, d.cpu.pc, d.cpu.imask, d.cpu.irq_latch[0]);
   d.input_data = v;
   d.input_full = 1;
-  if (g_trace_cmd >= 0 && v == (uint16_t)g_trace_cmd && !g_trace_left && d.dsp_cycles >= g_trace_after) g_trace_left = 20000;
+  if (g_trace_cmd >= 0 && v == (uint16_t)g_trace_cmd && !g_trace_left && d.dsp_cycles >= g_trace_after)
+    g_trace_left = getenv("DCS_TRACE_LEN") ? atoi(getenv("DCS_TRACE_LEN")) : 20000;
   adsp_set_irq_line(&d.cpu, ADSP_IRQ2, 1);
   g_dcs2_stats.host_writes++;
 }
@@ -494,6 +591,7 @@ int dcs2_init(const char* bootrom_path) {
   d.cpu.mstat_changed = mstat_changed;
   d.cpu.trace_on = getenv("DCS_TRACE") != NULL;
   g_log_io = getenv("DCS_LOG_IO") != NULL;
+  g_no_hle = getenv("DCS_NO_HLE") != NULL;
   if (getenv("DCS_TRACE_AFTER")) g_trace_after = strtoull(getenv("DCS_TRACE_AFTER"), NULL, 0);
   if (getenv("DCS_TRACE_ON_CMD")) g_trace_cmd = (int)strtol(getenv("DCS_TRACE_ON_CMD"), NULL, 16);
   d.present = 1;

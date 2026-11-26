@@ -55,6 +55,12 @@ The game normally drops anything outside its 512x384 screen, at two levels:
   x = 512. Its 512s are data and patched at boot. Its 0s are instructions, which the recompiler
   replaces through `Program::insn_override` (in `tools/recomp/src/main.cpp`) with code that reads
   `recomp_ws_xmin`.
+- **Players** are culled as a whole first (80135A40, which sets bit 1 of the player's flags at
+  +0x1B0; the draw routine 80138C3C skips players without it). In view space a player is hidden
+  when |x| > z·k, and k ends in a factor of 1.05 at 0x801F2458 that fits the 4:3 view. Hor+ widens
+  the visible half-width at every depth by aspect ÷ 4/3, so that factor is scaled by the same
+  amount. Without it, players just outside the 4:3 area vanished (25 times in 75 s of play;
+  none after).
 
 At 4:3 every patch is neutral: the same run produces identical triangle counts.
 

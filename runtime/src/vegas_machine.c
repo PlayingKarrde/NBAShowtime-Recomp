@@ -173,13 +173,12 @@ void recomp_cop0_write(RecompContext* ctx, int reg, uint64_t value, uint32_t pc)
 }
 
 /* ---- physical address map ---- */
-/* Bus time of one access, in Count units (8 ns). The I/O ASIC sits on the slow peripheral bus;
-   its access time matters for the sound board handshake: after a bank load the DSP replies
-   with a checksum and only re-enables its command interrupt vector a few microseconds later,
-   so a host that answers in a few nanoseconds sends its next command into that window and the
-   command is lost (no gameplay sound). */
+/* Bus time of one access, in Count units (8 ns). The I/O ASIC sits on the slow peripheral bus.
+   (Sound bank uploads no longer depend on it: dcs2.c takes them over, see upload_write. With
+   DCS_NO_HLE the sound program's own loader needs about 0.5 us here, or a command written while
+   it has its interrupt vector swapped out is lost.) */
 #define MMIO_COST 4
-#define IOASIC_COST 64 /* ~0.5 us */
+#define IOASIC_COST 32 /* ~0.25 us */
 #define VEGAS_LED 0x04600000u
 static uint8_t g_vegas_led;
 
