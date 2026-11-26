@@ -62,6 +62,15 @@ if cpu.debug then
     if done or dbg.execution_state ~= "stop" then return end
     if (cpu.state["PC"].value & 0xffffffff) == 0x80100000 then
       save_regs("entry_regs.json")
+      -- VRC5074 (Nile 4) system controller registers 0x1FA00000-0x1FA001FF: interrupt
+      -- routing etc. programmed by the BIOS before the game starts. (The UART at +0x300
+      -- is skipped: reading its data/IIR registers has side effects.)
+      local nf = assert(io.open(outdir .. "/entry_nile.bin", "wb"))
+      for a = 0x1FA00000, 0x1FA001FC, 4 do
+        nf:write(string.pack("<I4", space:read_u32(a) & 0xffffffff))
+      end
+      nf:close()
+      print("[dump] wrote entry_nile.bin")
       cpu.debug:bpclear()
       done = true
     end

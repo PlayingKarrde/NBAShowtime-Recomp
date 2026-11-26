@@ -49,11 +49,25 @@ from the table in guest RAM (0x8002B3C8) and calls the recompiled function. The 
 exception/interrupt entry (k0/k1, eret) is not used; the runtime will deliver interrupts natively.
 
 ## Smoke test (tests/smoke/smoke.c)
-**Current (BIOS recompiled):** syscall 4 (process setup) opens a file (syscall 13 → fd 7) and reads 8 KB
-(syscall 14). The recompiled BIOS IDE driver then programs the controller at 0xAC000100: the LBA,
-sector count, drive/head 0xE0 and command 0xC8 (READ DMA), plus bus-master DMA (PRD table address at
-+0x124, start at +0x120). It then polls status at +0x10A. **Next: emulate the IDE drive and DMA,
-backed by work/nbashowt.img.**
+```bash
+./build/smoke work/dumps/entry_ram.bin work/dumps/entry_regs.json work/nbashowt.img 300 --quiet
+```
+Runs the recompiled BIOS and game from the game's entry point on the runtime machine model
+(`runtime/src/vegas_machine.c`: CP0 and interrupts; `ide.c`: disk; `nile.c`: VRC5074 interrupt
+controller and UART). See [hardware.md](hardware.md).
+
+**Current state:**
+- syscall 4 reads the environment file from the disk through the BIOS file system, the IDE model and
+  the DMA completion interrupt;
+- the game's console output appears over the emulated UART (about 800 UART interrupts delivered
+  through the recompiled BIOS): environment variables, the welcome banner, the code CRC check, the
+  stack check;
+- the game starts talking to the Midway I/O ASIC at 0xA4800000;
+- Glide probes the PCI memory windows (0xB0400000…0xB4000000) and VRC5074 +0x200 for the Voodoo
+  Banshee, finds nothing, and the game halts in its Glide error handler.
+
+**Next:** the I/O ASIC (sound handshake, inputs, coin), then PCI configuration and the Banshee probe,
+which leads into the Glide replacement.
 
 Earlier run, with stub syscalls:
 Loads the MAME RAM and register snapshot and calls `func_80100000` (crt0) with stub hooks

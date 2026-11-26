@@ -1,8 +1,9 @@
-// Smoke test: run the recompiled game from its entry point on top of a MAME RAM
-// snapshot, with stub hardware. Logs syscalls, MMIO and COP0 traffic so we can see
-// how far the recompiled startup code gets.
+// Smoke test: run the recompiled BIOS + game from the game's entry point on top of a
+// MAME RAM snapshot, with the runtime's Vegas machine model (CP0, interrupts, IDE).
+// Logs syscalls and unmapped hardware accesses so we can see how far boot gets.
 //
-// usage: smoke <entry_ram.bin> <entry_regs.json> [max_events]
+// usage: smoke <entry_ram.bin> <entry_regs.json> <disk.img> [max_events] [--quiet]
+//   --quiet: don't log every syscall (only text written by the game, and hardware events)
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -11,40 +12,43 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "../../runtime/src/ide.h"
 #include "recomp.h"
 #include "recomp_funcs.h"
+#include "vegas.h"
 
 static jmp_buf g_abort;
 static long g_events, g_max_events = 400;
-static uint64_t g_count;          /* fake CP0 Count */
-static long g_mmio_reads, g_mmio_writes, g_syscalls;
-static volatile sig_atomic_t g_timed_out;
+static long g_syscalls;
+static int g_trace_syscalls = 1;
 
-static void event(const char* f, ...) {
-  va_list ap;
-  va_start(ap, f);
+static void summary(const char* why) {
+  char b[512];
+  int n = snprintf(b, sizeof b,
+                   "%s\nsummary: %ld events, %ld syscalls, %llu interrupts delivered, IDE: %llu cmds, "
+                   "%llu DMA, %llu sectors read, %llu written, virtual time %.3f s\n",
+                   why, g_events, g_syscalls, (unsigned long long)g_vegas.interrupts_delivered,
+                   (unsigned long long)g_ide_stats.commands, (unsigned long long)g_ide_stats.dma_transfers,
+                   (unsigned long long)g_ide_stats.sectors_read,
+                   (unsigned long long)g_ide_stats.sectors_written, g_vegas.cop0.cycles / 125e6);
+  if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+}
+
+static void vevent(const char* f, va_list ap) {
   printf("[%5ld] ", g_events);
   vprintf(f, ap);
   printf("\n");
-  va_end(ap);
   if (++g_events >= g_max_events) {
     printf("-- event limit reached --\n");
     longjmp(g_abort, 1);
   }
 }
-
-uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t a, int size) {
-  (void)ctx;
-  g_mmio_reads++;
-  event("mmio read%-2d %08X -> 0", size * 8, a);
-  return 0;
+static void event(const char* f, ...) {
+  va_list ap;
+  va_start(ap, f);
+  vevent(f, ap);
+  va_end(ap);
 }
-void recomp_mmio_write(RecompContext* ctx, uint32_t a, uint32_t v, int size) {
-  (void)ctx;
-  g_mmio_writes++;
-  event("mmio write%-2d %08X <- %08X", size * 8, a, v);
-}
-static int g_trace_syscalls = 1;
 
 void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
   g_syscalls++;
@@ -59,11 +63,11 @@ void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc) {
       buf[i] = (c == '\n' || c == '\r') ? '|' : (c < 32 || c > 126) ? '.' : c;
     }
     buf[n] = 0;
-    printf("        text: \"%s\"\n", buf);
+    printf("        text(fd %u): \"%s\"\n", R32(4), buf);
   }
-  /* Run the recompiled BIOS handler. */
   if (!recomp_bios_syscall(ctx, code)) event("syscall %u has no BIOS handler", code);
   if (g_trace_syscalls) printf("        -> v0=%08X\n", R32(2));
+  vegas_poll_interrupts(ctx);
 }
 void recomp_break(RecompContext* ctx, uint32_t code, uint32_t pc) {
   event("BREAK %u @%08X ra=%08X", code, pc, R32(31));
@@ -73,17 +77,6 @@ void recomp_trap(RecompContext* ctx, uint32_t pc) {
   event("TRAP @%08X ra=%08X", pc, R32(31));
   longjmp(g_abort, 2);
 }
-uint64_t recomp_cop0_read(RecompContext* ctx, int reg, uint32_t pc) {
-  (void)ctx;
-  if (reg == 9) { g_count += 125000; return SE32(g_count); } /* Count: +1 ms per read */
-  event("cop0 read $%d @%08X", reg, pc);
-  return reg == 12 ? 0x30011C01u : 0;
-}
-void recomp_cop0_write(RecompContext* ctx, int reg, uint64_t v, uint32_t pc) {
-  (void)ctx;
-  if (reg == 9) { g_count = (uint32_t)v; return; }
-  event("cop0 write $%d <- %08X @%08X", reg, (uint32_t)v, pc);
-}
 void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what) {
   event("UNHANDLED %s @%08X ra=%08X", what, pc, R32(31));
   longjmp(g_abort, 3);
@@ -91,10 +84,7 @@ void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what) {
 
 static void on_alarm(int sig) {
   (void)sig;
-  g_timed_out = 1;
-  /* async-signal-safe enough for a test harness */
-  const char msg[] = "-- timeout: generated code is spinning without touching hardware --\n";
-  write(1, msg, sizeof msg - 1);
+  summary("-- timeout (10 s wall clock) --");
   _exit(4);
 }
 
@@ -113,11 +103,15 @@ static int json_u64(const char* json, const char* key, uint64_t* out) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) {
-    fprintf(stderr, "usage: %s <entry_ram.bin> <entry_regs.json> [max_events]\n", argv[0]);
+  if (argc < 4) {
+    fprintf(stderr, "usage: %s <entry_ram.bin> <entry_regs.json> <disk.img> [max_events] [--quiet]\n",
+            argv[0]);
     return 2;
   }
-  if (argc > 3) g_max_events = atol(argv[3]);
+  for (int i = 4; i < argc; ++i) {
+    if (!strcmp(argv[i], "--quiet")) g_trace_syscalls = 0;
+    else g_max_events = atol(argv[i]);
+  }
   setvbuf(stdout, NULL, _IOLBF, 0);
 
   recomp_rdram = calloc(1, RECOMP_RAM_SIZE);
@@ -134,6 +128,15 @@ int main(int argc, char** argv) {
   json[fread(json, 1, sizeof json - 1, f)] = 0;
   fclose(f);
 
+  vegas_log = event;
+  /* VRC5074 register dump lives next to the register JSON (entry_nile.bin). */
+  char nile_path[1024];
+  snprintf(nile_path, sizeof nile_path, "%s", argv[2]);
+  char* slash = strrchr(nile_path, '/');
+  snprintf(slash ? slash + 1 : nile_path, sizeof nile_path - (size_t)(slash ? slash + 1 - nile_path : 0),
+           "entry_nile.bin");
+  if (vegas_init(argv[3], nile_path) != 0) return 1;
+
   RecompContext ctx;
   memset(&ctx, 0, sizeof ctx);
   for (int i = 1; i < 32; ++i) json_u64(json, gpr_names[i], &ctx.r[i]);
@@ -145,12 +148,14 @@ int main(int argc, char** argv) {
     snprintf(k, sizeof k, "FPR%d", i);
     if (json_u64(json, k, &v)) ctx.f[i] = (uint32_t)v;
   }
-  uint64_t fcsr = 0;
-  if (json_u64(json, "CCR31", &fcsr)) ctx.fcsr = (uint32_t)fcsr;
-  uint64_t count = 0;
-  if (json_u64(json, "Count", &count)) g_count = count;
+  uint64_t v = 0;
+  if (json_u64(json, "CCR31", &v)) ctx.fcsr = (uint32_t)v;
+  if (json_u64(json, "SR", &v)) g_vegas.cop0.sr = (uint32_t)v;
+  if (json_u64(json, "Count", &v)) g_vegas.cop0.count_base = (uint32_t)v;
+  if (json_u64(json, "Compare", &v)) g_vegas.cop0.compare = (uint32_t)v;
 
-  printf("entry: sp=%08X ra=%08X  functions=%u\n", (uint32_t)ctx.r[29], (uint32_t)ctx.r[31], recomp_func_count);
+  printf("entry: sp=%08X ra=%08X sr=%08X functions=%u\n", (uint32_t)ctx.r[29], (uint32_t)ctx.r[31],
+         g_vegas.cop0.sr, recomp_func_count);
   signal(SIGALRM, on_alarm);
   alarm(10);
 
@@ -159,7 +164,6 @@ int main(int argc, char** argv) {
     func_80100000(&ctx);
     printf("-- game entry returned (v0=%08X) --\n", (uint32_t)ctx.r[2]);
   }
-  printf("summary: %ld events, %ld syscalls, %ld mmio reads, %ld mmio writes, stop reason %d\n",
-         g_events, g_syscalls, g_mmio_reads, g_mmio_writes, rc);
+  summary("-- stopped --");
   return 0;
 }
