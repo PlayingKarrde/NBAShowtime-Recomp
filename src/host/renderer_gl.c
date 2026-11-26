@@ -397,9 +397,22 @@ static int is_sprite(const V3dVertex v[3]) {
   return v[0].wb == v[1].wb && v[1].wb == v[2].wb && v[0].wb >= 0.02f;
 }
 
+/* A 2D sprite covering the whole 512x384 screen is an overlay (the white flash on camera cuts,
+   fades): in widescreen it is stretched over the widened view instead of leaving the sides bare. */
+static int is_fullscreen(const V3dVertex v[3]) {
+  float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y;
+  for (int i = 1; i < 3; ++i) {
+    x0 = fminf(x0, v[i].x); x1 = fmaxf(x1, v[i].x);
+    y0 = fminf(y0, v[i].y); y1 = fmaxf(y1, v[i].y);
+  }
+  return x0 <= 0.5f && x1 >= 511.5f && y0 <= 0.5f && y1 >= 383.5f;
+}
+
 static void gl_triangle(void* user, const V3dState* st, const V3dVertex v[3]) {
   (void)user;
-  const int sprite = is_sprite(v);
+  int sprite = is_sprite(v);
+  const int widen = sprite && G.xmin < 0.0f && is_fullscreen(v);
+  if (widen) sprite = 0; /* not clipped to the 4:3 screen (see set_scissor) */
   if (G.batch_valid && (!same_state(st, &G.batch_state) || sprite != G.batch_sprite)) flush();
   if (!G.batch_valid || G.nverts == 0) { G.batch_state = *st; G.batch_valid = 1; G.batch_sprite = sprite; }
   /* textures written since the batch began must not be used stale */
@@ -411,6 +424,7 @@ static void gl_triangle(void* user, const V3dState* st, const V3dVertex v[3]) {
     Vtx* o = &G.verts[G.nverts++];
     o->x = v[i].x; o->y = v[i].y; o->z = v[i].z; o->wb = v[i].wb; o->w0 = v[i].w0;
     o->r = v[i].r; o->g = v[i].g; o->b = v[i].b; o->a = v[i].a; o->s = v[i].s0; o->t = v[i].t0;
+    if (widen) o->x = o->x <= 256.0f ? G.xmin : G.xmax;
   }
   G.stats.triangles++;
 }

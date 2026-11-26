@@ -68,7 +68,10 @@ At 4:3 every patch is neutral: the same run produces identical triangle counts.
 a third "INSERT COINS", just outside it and relies on the clip window to hide them. In widescreen the
 renderer therefore keeps sprites inside the original 4:3 area. A triangle counts as a sprite when all
 three of its 1/w values are equal and at least 0.02. Sprites are drawn at fixed layer depths
-(measured 1/18 to 1/1.6), while world geometry stays at or below 0.0112. The raw Y of every
+(measured 1/18 to 1/1.6), while world geometry stays at or below 0.0112. The exception is a sprite
+that covers the whole 512x384 screen. This is an overlay, such as the white flash on camera cuts
+(one textured quad with 1/w = 1). Its left and right edges are moved out to the widened view so it
+covers the whole frame. The raw Y of every
 triangle is bottom-up (lower-left origin), so screen row 0 is Y = 383.
 
 ## Build
