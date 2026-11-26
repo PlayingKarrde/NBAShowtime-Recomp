@@ -43,8 +43,9 @@ extern VegasMachine g_vegas;
 /* Initialise the machine. `disk_image` is the raw hard-disk image (chdman extracthd output);
    writes go to an in-memory overlay and the image file is never modified. `nile_regs` is the
    VRC5074 register dump taken with the RAM snapshot (interrupt routing, timers); `sio_regs` the
-   SIO board register dump (interrupt enables). Returns 0 on success. */
-int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs);
+   SIO board register dump (interrupt enables); `dcs_rom` the DCS2 boot ROM (vegassio.bin) for the
+   sound board (NULL = stand-in board). Returns 0 on success. */
+int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs, const char* dcs_rom);
 
 /* Raise/lower a hardware interrupt line (VEGAS_IRQ_*). */
 void vegas_set_irq(uint32_t line_bit, int asserted);

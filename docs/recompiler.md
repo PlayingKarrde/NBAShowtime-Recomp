@@ -56,21 +56,15 @@ Runs the recompiled BIOS and game from the game's entry point on the runtime mac
 (`runtime/src/vegas_machine.c`: CP0 and interrupts; `ide.c`: disk; `nile.c`: VRC5074 interrupt
 controller and UART). See [hardware.md](hardware.md).
 
-**Current state** (`./build/smoke … 400 --quiet`):
-- Glide finds and initialises the Banshee ("SST board 0: 3Dfx Banshee"), opens its command FIFO and
-  streams about 160,000 FIFO words (consumed but not rendered yet).
-- vblank (57 Hz) and the BIOS tick (800 Hz) drive the frame counter and timers; NVRAM is read and
-  validated.
-- The game's process scheduler runs game processes on host fibers (see below).
-- The sound board boots exactly like the real one (8 uploads, all checksums right) and the program
-  starts.
-- The game loads fonts, CMOS formats and the sound program files from disk, and creates its
-  audits/adjustments files (writes work).
-- **Blocker: sound bank loading.** For each `.BNK` bank the loader (`0x801E455C`) sends the data to
-  the running sound program and waits for its replies (`0x801E3D78`). The stand-in board can't answer
-  (the real answers come from the DSP program), so the loader retries and leaks a file handle each
-  time. Once the BIOS handle table is full, every open fails, `GEN_SEQ.ANI` can't load, and the game
-  parks in an error loop (`0x80115480`).
+**Current state** (`SMOKE_SECONDS=150 ./build/smoke … 2000 --quiet`):
+- Glide initialises the Banshee and streams command-FIFO packets (21 M words so far, not rendered yet).
+- vblank, the BIOS tick, NVRAM, disk reads/writes and the process scheduler (44 processes, 12k
+  switches) all work.
+- The **emulated DCS2 sound board** boots, receives the sound program, and accepts the sound banks
+  (1.5 M words). The game loads about 290 files: fonts, CMOS formats, sound banks, player/ball textures.
+- **Next blocker**: about 90 s in, a game process spins in floating-point code (`func_80198F80`, a
+  float search loop around `0x80199014`) and the BIOS watchdog fires. This is probably an FPU semantics
+  difference in the generated code (compare/NaN/conversion); not investigated yet.
 
 ## Game processes (runtime/src/proc.c)
 The game's scheduler (main loop `0x801B4270`) resumes a process by restoring its registers, swapping

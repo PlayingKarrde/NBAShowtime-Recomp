@@ -92,45 +92,34 @@ After reset is released the board replies `0x000A` (ready), and then:
 The game boots the board twice and uploads 8 blocks (10,752 program words + 25,088 data words). After
 the program starts, the CPU streams sound data and only occasionally sends queries (0x55D2–0x55D4).
 
-`runtime/src/ioasic.c` implements the boot monitor exactly and keeps the uploaded DSP program and
-data (`g_dcs`). `tests/ioasic_replay` replays a MAME trace through it: all boot-monitor replies match
-the real board. The running program isn't executed yet (no audio). Its few query replies come from a
-small table, and 7 of 120 replies in the trace differ. Real audio needs the ADSP-2104 itself
-(emulation or recompilation of the uploaded program).
+### Emulated DCS2 board (runtime/src/adsp2100.c, dcs2.c)
+The sound board is now emulated: an ADSP-2104 core (written from the ADSP-2100 family instruction set)
+runs the real boot ROM and the game's uploaded sound program. Board details (memory map, SDRC,
+latches, control registers) follow MAME's DCS2 2104 notes:
 
-## PCI bus (behind the VRC5074)
-The window at physical 0x10000000 does configuration or memory cycles depending on VRC5074 PCIINIT1
-(`+0xF8`, bits 3:1: 5 = configuration type 0, 3 = memory). The BIOS switches it around every config
-access. In config mode one address bit selects the slot (IDSEL):
+| DSP address | function |
+|---|---|
+| PM 0x0000–0x01FF | internal program RAM. On reset the first boot-ROM page is copied here ((byte3+1)×8 words, 4 bytes per word) |
+| PM 0x0800–0x3FFF | external program SRAM (when SDRC SM_EN) |
+| DM 0x0400 | input latch from the host (read). Writing it acknowledges and clears IRQ2 |
+| DM 0x0401 / 0x0402 | output latch to the host / output control (high byte shows in SOUNDSTAT) |
+| DM 0x0403 | latch status: 0x80 input full, 0x40 output empty, 0x08 FIFO empty |
+| DM 0x0480–0x0483 | SDRC: SRAM banks, boot-ROM page window, 4 MB DRAM page window, security register |
+| DM 0x0800–0x37FF | external data SRAM (two banks) |
+| DM 0x3800–0x39FF | internal data RAM |
+| DM 0x3FE0–0x3FFF | ADSP control registers: SPORT1 autobuffer, timer, system control |
 
-| address | slot | device |
-|---|---|---|
-| 0x10400000 / 0x10800000 / 0x12000000 | — | empty (reads 0xFFFFFFFF) |
-| 0x11000000 | IDSEL 24 | 3dfx Voodoo Banshee (0x0003121A), class 0x0300 rev 2, BAR0 0x10000000, BAR1 0x12000000, I/O 0x0C000001 |
-| 0x14000000 | IDSEL 26 | CMD646 IDE (0x06461095), I/O BARs 0x0C000101… |
+- Host write → input latch + **IRQ2**. SOUNDSTAT bit 7 = input empty, bit 6 = output full.
+- **SPORT0 receive interrupt at 1 kHz** while system control bit 12 is set: the sound program's tick.
+  Its handler sends one queued reply per tick, when the output latch is empty.
+- **Timer**: TSCALE/TCOUNT/TPERIOD. The ROM's and the program's handlers only refresh DRAM.
+- **SPORT1 autobuffered transmit** → audio. The rate is 16 MHz / (2×(SCLKDIV+1)) / 32 with internal
+  clock, else 31,250 Hz. IRQ1 fires on buffer wrap. Samples go to a ring buffer (`dcs2_audio_read`).
+- The DSP runs at 16 MHz in step with virtual time (`dcs2_sync`, converting absolute time).
 
-The VRC5074's own config space is at `+0x200` (NEC 0x005A1033, host bridge).
+Verification: `./build/ioasic_replay work/dumps/sound_trace.txt work/bios/vegassio.bin` replays the MAME
+sound-port trace (400k words) through the emulated board. **All 120 replies match the real board**
+(boot monitor, 8 upload checksums, program start, and the program's query replies).
+`tools/mame/trace_dsp.lua` records MAME's DSP instruction trace for comparison.
 
-## Voodoo Banshee
-Glide 3.10 (statically linked) drives the card directly. The model works at register level so that
-Glide's own code runs unmodified:
-- **init/video registers** with the values the real card returns (e.g. `vidScreenSize` 512×384);
-- **status** idle, with the vertical-retrace bit driven by virtual time;
-- **command FIFO** in VRAM (base `cmdBaseAddr0` 0xE9E pages, size from `cmdBaseSize0`). Glide writes
-  packets straight into frame-buffer memory and polls the read pointer (`+0x8002C`) and depth
-  (`+0x80044`). The model currently consumes instantly (read pointer = last write), so Glide never
-  waits. **The packets aren't parsed yet: that is the renderer's input.**
-
-## Timers and periodic interrupts
-- VRC5074 timers `+0x1C0 + 0x10n`: CTRL low = reload value, CTRL high bit 0 = enable, CNTR at +8.
-  They count down at 100 MHz. Only writing the reload value restarts a timer; toggling enable doesn't
-  (the BIOS timestamp, syscall 73, pauses T3 around every read). At entry: T0 = 390 (refresh?),
-  T2 = 10 Hz, **T3 = 125,000 → 800 Hz BIOS tick**, raising VRC5074 source 5 (IP4). Its handler
-  increments `0x8002A270` and runs software timers, including a watchdog that raises a fatal error if
-  the game doesn't wait for a frame (syscall 56) for 20 s.
-- **Vertical blank** at 57 Hz: SIO sub-source 5 → VRC5074 source 10 → IP3. The BIOS handler
-  (`0x800113AC`) acknowledges by clearing/setting SIO control bit 3 and increments the frame counter
-  `0x8002A260` (syscalls 56/57).
-- SIO sub-source 1 (about 785/s in MAME) is the I/O ASIC interrupt; not modelled yet.
-- VRC5074 sources are level-triggered for devices (UART, PCI INTx: SIO, IDE) and edge-latched for
-  timer reloads (cleared by INTCLR).
+Without the boot ROM the I/O ASIC falls back to the stand-in board (boot monitor only).

@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "dcs2.h"
 #include "vegas.h"
 
 /* Register offsets (byte offsets from IOASIC_BASE), as used by this game/BIOS. */
@@ -152,6 +153,14 @@ void ioasic_set_input(int port, uint16_t value) {
 int ioasic_handles(uint32_t p) { return p >= IOASIC_BASE && p < IOASIC_BASE + IOASIC_SIZE; }
 
 static uint16_t read16(uint32_t off) {
+  if (dcs2_present()) { /* real DCS2 board */
+    const uint64_t now = g_vegas.cop0.cycles;
+    switch (off) {
+      case REG_SOUND_STAT: return (uint16_t)(dcs2_status(now) | 0x0008 /* FIFO empty */);
+      case REG_SOUND_IN: return dcs2_data_r(now);
+      default: break;
+    }
+  }
   switch (off) {
     case REG_SOUND_STAT:
       return (uint16_t)(0x0008 | 0x0080 /* consumed instantly */ | (io.reply_count ? 0x0040 : 0));
@@ -177,6 +186,15 @@ static uint16_t read16(uint32_t off) {
 }
 
 static void write16(uint32_t off, uint16_t v) {
+  if (dcs2_present()) { /* real DCS2 board */
+    const uint64_t now = g_vegas.cop0.cycles;
+    switch (off) {
+      case REG_SOUND_OUT: dcs2_data_w(v, now); g_dcs.words_received++; return;
+      case REG_SOUND_RESET: io.regs[off / 2] = v; dcs2_reset_line(v & 1, now); return;
+      case REG_SOUND_IN: dcs2_ack_w(now); return;
+      default: break;
+    }
+  }
   switch (off) {
     case REG_SOUND_OUT: dcs_write(v); break;
     case REG_SOUND_RESET: {

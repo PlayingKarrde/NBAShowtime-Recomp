@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "banshee.h"
+#include "dcs2.h"
 #include "ide.h"
 #include "ioasic.h"
 #include "nile.h"
@@ -31,13 +32,14 @@ void (*vegas_log)(const char* fmt, ...) = default_log;
 #define FRAME_EPC 0x110u
 #define FRAME_COP0(n) (0x118u + 8u * (n)) /* CP0 register n as saved by the entry code */
 
-int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs) {
+int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs, const char* dcs_rom) {
   memset(&g_vegas, 0, sizeof g_vegas);
   g_vegas.cop0.sr = 0x30011C01u; /* value at game entry (MAME snapshot) */
   g_vegas.cop0.compare = 0xFFFFFFFFu;
-  g_vegas.count_step = 2000;     /* 16 us of virtual time per Count read */
+  g_vegas.count_step = 40;       /* ~0.3 us per Count/timer read; loops advance time via RECOMP_LOOP */
   nile_init(nile_regs);
   ioasic_init();
+  dcs2_init(dcs_rom); /* without the boot ROM the I/O ASIC falls back to its stand-in board */
   sio_init(sio_regs);
   nvram_init(NULL); /* blank board: the game validates and restores defaults */
   pci_init();
@@ -63,6 +65,7 @@ void vegas_advance(uint64_t cycles) {
     vegas_set_irq(VEGAS_IRQ_TIMER, 1);
   nile_advance();
   sio_advance(g_vegas.cop0.cycles);
+  dcs2_sync(g_vegas.cop0.cycles);
 }
 
 static uint32_t cause_now(void) {

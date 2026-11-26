@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "../../runtime/src/banshee.h"
+#include "../../runtime/src/dcs2.h"
 #include "../../runtime/src/ide.h"
 #include "../../runtime/src/ioasic.h"
 #include "recomp.h"
@@ -59,6 +60,7 @@ static void dump_console_buffer(void) {
 
 #ifdef RECOMP_TRACE_CALLS
 void recomp_break_hit(uint32_t addr) {
+  dcs2_debug_dump();
   printf("-- break at %08X --\n", addr);
   dump_call_trace(RECOMP_CALL_RING - 1);
   printf("-- stopped at break --\n");
@@ -165,7 +167,7 @@ static void on_alarm(int sig) {
   void* frames[48];
   int n = backtrace(frames, 48);
   backtrace_symbols_fd(frames, n, 1);
-  summary("-- timeout (10 s wall clock) --");
+  summary("-- timeout (wall clock) --");
   _exit(4);
 }
 
@@ -225,7 +227,9 @@ int main(int argc, char** argv) {
   if (slash) slash[1] = 0; else dir[0] = 0;
   snprintf(nile_path, sizeof nile_path, "%sentry_nile.bin", dir);
   snprintf(sio_path, sizeof sio_path, "%sentry_sio.bin", dir);
-  if (vegas_init(argv[3], nile_path, sio_path) != 0) return 1;
+  const char* dcs_rom = getenv("DCS_ROM") ? getenv("DCS_ROM") : "work/bios/vegassio.bin";
+  if (getenv("NO_DSP")) dcs_rom = NULL;
+  if (vegas_init(argv[3], nile_path, sio_path, dcs_rom) != 0) return 1;
 
   RecompContext ctx;
   memset(&ctx, 0, sizeof ctx);
@@ -247,7 +251,7 @@ int main(int argc, char** argv) {
   printf("entry: sp=%08X ra=%08X sr=%08X functions=%u\n", (uint32_t)ctx.r[29], (uint32_t)ctx.r[31],
          g_vegas.cop0.sr, recomp_func_count);
   signal(SIGALRM, on_alarm);
-  alarm(10);
+  alarm(getenv("SMOKE_SECONDS") ? (unsigned)atoi(getenv("SMOKE_SECONDS")) : 10);
 
   int rc = setjmp(g_abort);
   if (rc == 0) {
