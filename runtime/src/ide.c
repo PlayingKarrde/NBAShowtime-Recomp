@@ -1,11 +1,14 @@
 // IDE disk model: ATA task file, PIO, IDENTIFY, bus-master DMA (READ/WRITE DMA).
-// Backed by the raw disk image; writes go to an in-memory copy-on-write overlay.
+// Backed by the game's CHD (MAME compressed hard disk, read with libchdr) or a raw disk image;
+// writes go to an in-memory copy-on-write overlay.
 #define _FILE_OFFSET_BITS 64
 #include "ide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <libchdr/chd.h>
 
 #include "nile.h"
 #include "vegas.h"
@@ -30,7 +33,11 @@
 IdeStats g_ide_stats;
 
 static struct {
-  FILE* img;
+  FILE* img;        /* raw image, or */
+  chd_file* chd;    /* CHD: one decoded hunk is kept in hunk_buf */
+  uint8_t* hunk_buf;
+  uint32_t hunk_bytes;
+  int64_t hunk_cur;
   uint64_t sectors;
   uint8_t** overlay; /* overlay[page][sector-in-page * 512] (NULL if untouched) */
   uint64_t overlay_pages;
@@ -78,13 +85,28 @@ int ide_init(const char* path) {
   /* The BIOS sets the READ/WRITE MULTIPLE block size (SET MULTIPLE, count = word 0x8003C92C)
      during boot, before the game snapshot is taken: start with that drive state. */
   ide.multiple = 16;
-  ide.img = fopen(path, "rb");
-  if (!ide.img) {
-    vegas_log("ide: cannot open disk image %s", path);
-    return -1;
+  const size_t n = strlen(path);
+  if (n > 4 && (!strcmp(path + n - 4, ".chd") || !strcmp(path + n - 4, ".CHD"))) {
+    chd_error err = chd_open(path, CHD_OPEN_READ, NULL, &ide.chd);
+    if (err != CHDERR_NONE) {
+      vegas_log("ide: cannot open %s: %s", path, chd_error_string(err));
+      return -1;
+    }
+    const chd_header* h = chd_get_header(ide.chd);
+    ide.hunk_bytes = h->hunkbytes;
+    ide.hunk_buf = malloc(ide.hunk_bytes);
+    ide.hunk_cur = -1;
+    ide.sectors = h->logicalbytes / SECTOR;
+    chd_set_cache_budget(ide.chd, 16u << 20); /* recently decoded hunks */
+  } else {
+    ide.img = fopen(path, "rb");
+    if (!ide.img) {
+      vegas_log("ide: cannot open disk image %s", path);
+      return -1;
+    }
+    fseeko(ide.img, 0, SEEK_END);
+    ide.sectors = (uint64_t)ftello(ide.img) / SECTOR;
   }
-  fseeko(ide.img, 0, SEEK_END);
-  ide.sectors = (uint64_t)ftello(ide.img) / SECTOR;
   ide.overlay_pages = (ide.sectors + OVERLAY_PAGE - 1) / OVERLAY_PAGE;
   ide.overlay = calloc(ide.overlay_pages, sizeof *ide.overlay);
   ide.status = ST_DRDY | ST_DSC;
@@ -99,8 +121,23 @@ static void read_sector(uint64_t lba, uint8_t* out) {
     memcpy(out, page + (lba % OVERLAY_PAGE) * SECTOR, SECTOR);
     return;
   }
-  fseeko(ide.img, (off_t)(lba * SECTOR), SEEK_SET);
-  if (fread(out, 1, SECTOR, ide.img) != SECTOR) memset(out, 0, SECTOR);
+  if (ide.chd) {
+    const uint64_t byte = lba * SECTOR;
+    const int64_t hunk = (int64_t)(byte / ide.hunk_bytes);
+    if (hunk != ide.hunk_cur) {
+      if (chd_read(ide.chd, (uint32_t)hunk, ide.hunk_buf) != CHDERR_NONE) {
+        vegas_log("ide: CHD read error at hunk %lld", (long long)hunk);
+        memset(out, 0, SECTOR);
+        ide.hunk_cur = -1;
+        return;
+      }
+      ide.hunk_cur = hunk;
+    }
+    memcpy(out, ide.hunk_buf + byte % ide.hunk_bytes, SECTOR);
+  } else {
+    fseeko(ide.img, (off_t)(lba * SECTOR), SEEK_SET);
+    if (fread(out, 1, SECTOR, ide.img) != SECTOR) memset(out, 0, SECTOR);
+  }
   g_ide_stats.sectors_read++;
 }
 

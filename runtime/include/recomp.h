@@ -2,11 +2,33 @@
 //
 // Guest: MIPS R5000, little-endian, 32-bit kernel addresses (kseg0/kseg1), FPU in FR=0
 // mode (16 double registers made of even/odd 32-bit pairs).
+//
+// Three ways to link (see docs/launcher.md):
+//   default               generated code and runtime in one program (smoke test, trace builds)
+//   RECOMP_GAME_MODULE    compiling the generated code as the game library (nbagame.so/.dll):
+//                         runtime hooks are called through the RecompHostApi table the engine
+//                         hands over; the library owns the shared state below
+//   RECOMP_ENGINE_DYNAMIC compiling the engine that loads that library: the shared state and
+//                         the function table are reached through recomp_game
 #ifndef NBA_RECOMP_H
 #define NBA_RECOMP_H
 
 #include <stdint.h>
 #include <string.h>
+
+#include "recomp_version.h"
+
+#if defined(RECOMP_GAME_MODULE) && defined(RECOMP_ENGINE_DYNAMIC)
+#error "RECOMP_GAME_MODULE and RECOMP_ENGINE_DYNAMIC are exclusive"
+#endif
+#if defined(RECOMP_TRACE_CALLS) && (defined(RECOMP_GAME_MODULE) || defined(RECOMP_ENGINE_DYNAMIC))
+#error "RECOMP_TRACE_CALLS needs the static build"
+#endif
+#if defined(RECOMP_GAME_MODULE) && defined(__GNUC__) && !defined(_WIN32)
+/* Everything in the library is internal (direct, PC-relative access on hot paths) except the one
+   exported entry point. */
+#pragma GCC visibility push(hidden)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,39 +44,125 @@ typedef struct RecompContext {
 } RecompContext;
 
 typedef void (*RecompFunc)(RecompContext* ctx);
+typedef struct { uint32_t addr; RecompFunc fn; } RecompFuncEntry; /* sorted by addr */
 
-extern uint8_t* recomp_rdram; /* host pointer to guest physical RAM */
+/* FP exception kinds for recomp_fpe_arith (runtime/src/fpu.c). */
+enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_FPE_RSQRT = 3, RECOMP_FPE_RECIP = 4 };
 
-/* ---- runtime hooks (implemented by the runtime) ---- */
-uint32_t recomp_mmio_read(RecompContext* ctx, uint32_t vaddr, int size);
-void recomp_mmio_write(RecompContext* ctx, uint32_t vaddr, uint32_t value, int size);
-RecompFunc recomp_lookup(RecompContext* ctx, uint32_t vaddr); /* indirect calls/jumps */
-void recomp_syscall(RecompContext* ctx, uint32_t code, uint32_t pc);
-void recomp_break(RecompContext* ctx, uint32_t code, uint32_t pc);
-void recomp_trap(RecompContext* ctx, uint32_t pc);
-uint64_t recomp_cop0_read(RecompContext* ctx, int reg, uint32_t pc);
-void recomp_cop0_write(RecompContext* ctx, int reg, uint64_t value, uint32_t pc);
-void recomp_unhandled(RecompContext* ctx, uint32_t pc, const char* what);
+/* ---- runtime hooks called by generated code (implemented by the runtime) ----
+   X(return type, name, parameters). In a game library each is a field of recomp_host.
+   - mmio_read/write: physical addresses outside main RAM (hardware registers)
+   - lookup: indirect calls/jumps; syscall/break/trap/cop0: privileged instructions
+   - slice: loop budget ran out (RECOMP_LOOP); proc_switch_in/out: game process switching
+     (runtime/src/proc.c), emitted at the scheduler's resume `jr ra` and the jumps back into it
+   - fpe_arith/fpe_invalid: FP exceptions. Generated code checks results inline and calls these
+     only for non-finite results / invalid conversions; a nonzero return means the BIOS FP
+     exception handler supplied the result (the destination register must not be written)
+   - set_fcsr: ctc1 $31, also applies FS / RM to the host FPU
+   - cvt_w/cvt_l: float -> integer with the guest's results for NaN / overflow
+     (mode: 0 round, 1 trunc, 2 ceil, 3 floor, -1 = FCSR) */
+#define RECOMP_HOST_FUNCS(X)                                                                    \
+  X(uint32_t, recomp_mmio_read, (RecompContext * ctx, uint32_t vaddr, int size))                 \
+  X(void, recomp_mmio_write, (RecompContext * ctx, uint32_t vaddr, uint32_t value, int size))    \
+  X(RecompFunc, recomp_lookup, (RecompContext * ctx, uint32_t vaddr))                            \
+  X(void, recomp_syscall, (RecompContext * ctx, uint32_t code, uint32_t pc))                     \
+  X(void, recomp_break, (RecompContext * ctx, uint32_t code, uint32_t pc))                       \
+  X(void, recomp_trap, (RecompContext * ctx, uint32_t pc))                                       \
+  X(uint64_t, recomp_cop0_read, (RecompContext * ctx, int reg, uint32_t pc))                     \
+  X(void, recomp_cop0_write, (RecompContext * ctx, int reg, uint64_t value, uint32_t pc))        \
+  X(void, recomp_unhandled, (RecompContext * ctx, uint32_t pc, const char* what))                \
+  X(void, recomp_slice, (RecompContext * ctx))                                                   \
+  X(void, recomp_proc_switch_in, (RecompContext * ctx))                                          \
+  X(void, recomp_proc_switch_out, (RecompContext * ctx, uint32_t from))                          \
+  X(int, recomp_fpe_arith,                                                                       \
+    (RecompContext * ctx, uint32_t pc, int kind, double a, double b, double c, double r))        \
+  X(int, recomp_fpe_invalid, (RecompContext * ctx, uint32_t pc))                                 \
+  X(void, recomp_set_fcsr, (RecompContext * ctx, uint32_t v))                                    \
+  X(int32_t, recomp_cvt_w, (double v, int mode))                                                 \
+  X(int64_t, recomp_cvt_l, (double v, int mode))
+
+/* What the engine hands the game library. */
+typedef struct RecompHostApi {
+  uint32_t abi_version; /* RECOMP_GAME_ABI */
+  uint32_t size;        /* sizeof(RecompHostApi) */
+#define RECOMP_X_FIELD(ret, name, args) ret(*name) args;
+  RECOMP_HOST_FUNCS(RECOMP_X_FIELD)
+#undef RECOMP_X_FIELD
+} RecompHostApi;
+
+/* What the game library hands back. The first two fields never move, so any engine can read
+   them and tell the player to rebuild when they don't match. */
+typedef struct RecompGameExports {
+  uint32_t abi_version;      /* RECOMP_GAME_ABI the library was built with */
+  uint32_t codegen_revision; /* RECOMP_CODEGEN_REVISION the code was generated with */
+  const RecompFuncEntry* func_table;
+  unsigned func_count;
+  uint8_t** rdram;  /* the library's shared state (see below) */
+  int32_t* budget;
+  float* ws_xmin;
+} RecompGameExports;
+typedef const RecompGameExports* (*RecompGameInitFn)(const RecompHostApi* host);
+#define RECOMP_GAME_INIT_SYMBOL "recomp_game_init"
+
+/* ---- shared state ----
+   recomp_rdram: host pointer to guest physical RAM; recomp_budget: loop budget (RECOMP_LOOP);
+   recomp_ws_xmin: widescreen left edge for patched game instructions (runtime/src/widescreen.c,
+   0 = original); recomp_func_table / recomp_func_count: every recompiled function. */
+#ifdef RECOMP_ENGINE_DYNAMIC
+extern const RecompGameExports* recomp_game; /* set by the engine once the library is loaded */
+#define recomp_rdram (*recomp_game->rdram)
+#define recomp_budget (*recomp_game->budget)
+#define recomp_ws_xmin (*recomp_game->ws_xmin)
+#define recomp_func_table (recomp_game->func_table)
+#define recomp_func_count (recomp_game->func_count)
+#else
+extern uint8_t* recomp_rdram;
+extern int32_t recomp_budget;
+extern float recomp_ws_xmin;
+extern const RecompFuncEntry recomp_func_table[];
+extern const unsigned recomp_func_count;
+#endif
+
+#ifdef RECOMP_GAME_MODULE
+extern RecompHostApi recomp_host;
+#define recomp_mmio_read recomp_host.recomp_mmio_read
+#define recomp_mmio_write recomp_host.recomp_mmio_write
+#define recomp_lookup recomp_host.recomp_lookup
+#define recomp_syscall recomp_host.recomp_syscall
+#define recomp_break recomp_host.recomp_break
+#define recomp_trap recomp_host.recomp_trap
+#define recomp_cop0_read recomp_host.recomp_cop0_read
+#define recomp_cop0_write recomp_host.recomp_cop0_write
+#define recomp_unhandled recomp_host.recomp_unhandled
+#define recomp_slice recomp_host.recomp_slice
+#define recomp_proc_switch_in recomp_host.recomp_proc_switch_in
+#define recomp_proc_switch_out recomp_host.recomp_proc_switch_out
+#define recomp_fpe_arith recomp_host.recomp_fpe_arith
+#define recomp_fpe_invalid recomp_host.recomp_fpe_invalid
+#define recomp_set_fcsr recomp_host.recomp_set_fcsr
+#define recomp_cvt_w recomp_host.recomp_cvt_w
+#define recomp_cvt_l recomp_host.recomp_cvt_l
+#else
+#define RECOMP_X_DECL(ret, name, args) ret name args;
+RECOMP_HOST_FUNCS(RECOMP_X_DECL)
+#undef RECOMP_X_DECL
+void recomp_fpu_host_sync(void); /* re-apply the FPU mode after a host context switch */
+#endif
 
 /* Vegas BIOS: dispatch syscall `code` the way the BIOS exception handler does
    (handler address from the syscall table in guest RAM, called as a plain function).
    Returns 0 if the table has no handler for `code`. */
 #define RECOMP_BIOS_SYSCALL_TABLE 0x8002B3C8u
 #define RECOMP_BIOS_SYSCALL_COUNT 104u
+#ifndef RECOMP_GAME_MODULE
 int recomp_bios_syscall(RecompContext* ctx, uint32_t code);
+#endif
 
 /* Loop back-edge accounting: every backward branch charges its body size (instructions) to a
    budget; when it runs out the runtime advances virtual time and delivers interrupts. This makes
    loops that only poll RAM (e.g. waiting for a vblank counter) see interrupts, and keeps timing
    deterministic. */
-extern int32_t recomp_budget;
-void recomp_slice(RecompContext* ctx);
 #define RECOMP_LOOP(n) do { recomp_budget -= (n); if (recomp_budget < 0) recomp_slice(ctx); } while (0)
-
-/* Game process switching (runtime/src/proc.c): emitted at the scheduler's resume `jr ra` and at
-   the jumps back into the scheduler from sleep/exit. */
-void recomp_proc_switch_in(RecompContext* ctx);
-void recomp_proc_switch_out(RecompContext* ctx, uint32_t from);
 
 /* Optional function-entry trace for debugging (configure with -DRECOMP_TRACE_CALLS=ON):
    every recompiled function records its guest address in a ring buffer. */
@@ -188,25 +296,16 @@ static inline int fcmp(double a, double b, int cond) {
 
 /* Float -> integer conversions with defined results for NaN/overflow
    (the hardware would raise Invalid; with traps off it yields 0x7fffffff). */
-int32_t recomp_cvt_w(double v, int mode); /* mode: 0 round, 1 trunc, 2 ceil, 3 floor, -1 = FCSR */
 static inline int recomp_cvt_w_bad(double v) { return !(v > -2147483648.5 && v < 2147483647.5); }
 static inline int recomp_cvt_l_bad(double v) { return !(v > -9.2233720368547758e18 && v < 9.2233720368547758e18); }
 
-/* FP exceptions (runtime/src/fpu.c). Generated code checks results inline and calls these only
-   for non-finite results / invalid conversions; a nonzero return means the BIOS FP exception
-   handler supplied the result (the destination register must not be written). */
-enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_FPE_RSQRT = 3, RECOMP_FPE_RECIP = 4 };
-int recomp_fpe_arith(RecompContext* ctx, uint32_t pc, int kind, double a, double b, double c, double r);
-int recomp_fpe_invalid(RecompContext* ctx, uint32_t pc);
-void recomp_set_fcsr(RecompContext* ctx, uint32_t v); /* ctc1 $31: also applies FS / RM to the host FPU */
-void recomp_fpu_host_sync(void);                      /* re-apply after a host context switch */
-/* widescreen left edge for patched game instructions (runtime/src/widescreen.c); 0 = original */
-extern float recomp_ws_xmin;
 static inline uint32_t recomp_ws_xmin_bits(void) { uint32_t b; memcpy(&b, &recomp_ws_xmin, 4); return b; }
 #define RECOMP_UNLIKELY(x) __builtin_expect(!!(x), 0)
-int64_t recomp_cvt_l(double v, int mode);
 
 #ifdef __cplusplus
 }
+#endif
+#if defined(RECOMP_GAME_MODULE) && defined(__GNUC__) && !defined(_WIN32)
+#pragma GCC visibility pop
 #endif
 #endif /* NBA_RECOMP_H */

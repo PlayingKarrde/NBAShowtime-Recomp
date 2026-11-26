@@ -34,8 +34,11 @@ void (*vegas_vblank_hook)(void);
 #define FRAME_EPC 0x110u
 #define FRAME_COP0(n) (0x118u + 8u * (n)) /* CP0 register n as saved by the entry code */
 
+#define SLICE_INSTRUCTIONS 4000 /* ~16 us of R5000 time between interrupt checks in tight loops */
+
 int vegas_init(const char* disk_image, const char* nile_regs, const char* sio_regs, const char* dcs_rom) {
   memset(&g_vegas, 0, sizeof g_vegas);
+  recomp_budget = SLICE_INSTRUCTIONS;
   g_vegas.cop0.sr = 0x30011C01u; /* value at game entry (MAME snapshot) */
   g_vegas.cop0.compare = 0xFFFFFFFFu;
   g_vegas.count_step = 40;       /* ~0.3 us per Count/timer read; loops advance time via RECOMP_LOOP */
@@ -120,8 +123,9 @@ void vegas_poll_interrupts(RecompContext* ctx) {
 }
 
 /* ---- loop budget ---- */
-#define SLICE_INSTRUCTIONS 4000 /* ~16 us of R5000 time between interrupt checks in tight loops */
+#ifndef RECOMP_ENGINE_DYNAMIC
 int32_t recomp_budget = SLICE_INSTRUCTIONS;
+#endif
 
 void recomp_slice(RecompContext* ctx) {
   const int32_t used = SLICE_INSTRUCTIONS - recomp_budget;

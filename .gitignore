@@ -3,6 +3,9 @@ rom/
 work/
 # Build and generated output
 build/
+build-*/
 out/
 # Recompiled game code is derived from the copyrighted binary — regenerate locally
 generated/
+# Bundled compiler (Zig) for launcher builds
+toolchain/

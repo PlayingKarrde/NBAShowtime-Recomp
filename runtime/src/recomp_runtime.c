@@ -4,9 +4,12 @@
 #include <stdint.h>
 
 #include "recomp.h"
-#include "recomp_funcs.h"
 
+#ifdef RECOMP_ENGINE_DYNAMIC
+const RecompGameExports* recomp_game; /* the loaded game library (src/host/game_loader.c) */
+#else
 uint8_t* recomp_rdram;
+#endif
 
 #ifdef RECOMP_TRACE_CALLS
 uint32_t recomp_call_ring[RECOMP_CALL_RING];

@@ -21,7 +21,9 @@
 
 #include "recomp.h"
 
+#ifndef RECOMP_ENGINE_DYNAMIC
 float recomp_ws_xmin;
+#endif
 
 static void mulf(uint32_t vaddr, float k) {
   uint8_t* p = recomp_rdram + (vaddr & 0x1FFFFFFFu);

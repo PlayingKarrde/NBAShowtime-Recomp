@@ -5,9 +5,12 @@
 Banshee output with OpenGL at any resolution and plays the DCS2 sound board's audio, paced to
 real time. Pacing, audio and input run at every emulated vblank (`vegas_vblank_hook`), not just
 at buffer swaps, so loading screens are paced too, and at most about 80 ms of audio is queued.
-Run it from the repository root after dumping the entry state:
+The recompiled game is a separate library (`nbagame.so`, built next to the executable when
+`generated/` exists) that the engine loads at startup; see [launcher.md](launcher.md). Run it
+from the repository root after dumping the entry state (a launcher build instead finds
+everything in `data/` next to the executable, and reads the disk from `nbashowt.chd`):
 
-    ./build/nbashowtime [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
+    ./build/nbashowtime [--game nbagame.so] [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
                         [--volume PERCENT] [--vsync] [--perf]
 
 Timing comes from the arcade's 57 Hz vblank alone. `--vsync` also makes each swap wait for the
@@ -75,7 +78,9 @@ covers the whole frame. The raw Y of every
 triangle is bottom-up (lower-left origin), so screen row 0 is Y = 383.
 
 ## Build
+Players build the game with the launcher instead; see [launcher.md](launcher.md). By hand:
 ```bash
+git submodule update --init                                               # third_party/libchdr
 cmake -S . -B build -G Ninja && cmake --build build                       # builds nbarecomp
 ./build/tools/recomp/nbarecomp generate-vegas work/dumps/entry_ram.bin    # BIOS + game -> generated/*.c
 cmake -S . -B build -G Ninja && cmake --build build                       # picks up generated/, builds smoke

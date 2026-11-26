@@ -2,10 +2,13 @@
 // the Banshee output with OpenGL in an SDL3 window and plays the DCS2 sound board's audio.
 //
 // usage: nbashowtime [options]
-//   --ram FILE     game entry RAM snapshot      (default work/dumps/entry_ram.bin)
-//   --regs FILE    entry register JSON           (default work/dumps/entry_regs.json)
-//   --disk FILE    hard disk image               (default work/nbashowt.img)
-//   --sound FILE   DCS2 boot ROM (vegassio.bin)  (default work/bios/vegassio.bin)
+//   --ram FILE     game entry RAM snapshot      (default data/entry_ram.bin, else work/dumps/entry_ram.bin)
+//   --regs FILE    entry register JSON           (default data/entry_regs.json, else work/dumps/entry_regs.json)
+//   --disk FILE    hard disk, .chd or raw image  (default data/nbashowt.chd, else work/nbashowt.img)
+//   --sound FILE   DCS2 boot ROM (vegassio.bin)  (default data/vegassio.bin, else work/bios/vegassio.bin)
+//   --game FILE    game library built by the launcher (default nbagame.so/.dll/.dylib next to the executable)
+//   The data/ defaults are next to the executable, where the launcher puts them; the work/ ones
+//   are the developer tree (run from the repository root).
 //   --scale S      render scale (x 512x384); default: fit the window height
 //   --window WxH   initial window size           (default 1280x960)
 //   --fullscreen   desktop fullscreen
@@ -33,10 +36,12 @@
 #include "../../runtime/src/ide.h"
 #include "../../runtime/src/raster_sw.h"
 #include "../../runtime/src/widescreen.h"
+#ifndef NBA_STATIC_GAME
+#include "game_loader.h"
+#endif
 #include "gl_funcs.h"
 #include "input.h"
 #include "recomp.h"
-#include "recomp_funcs.h"
 #include "renderer_gl.h"
 #include "vegas.h"
 
@@ -331,11 +336,32 @@ static int load_entry(RecompContext* ctx, const char* ram_path, const char* regs
   return 0;
 }
 
+static int file_exists(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (f) fclose(f);
+  return f != NULL;
+}
+
 int main(int argc, char** argv) {
   const char* ram = "work/dumps/entry_ram.bin";
   const char* regs = "work/dumps/entry_regs.json";
   const char* disk = "work/nbashowt.img";
   const char* sound = "work/bios/vegassio.bin";
+  static char data_ram[1100], data_regs[1100], data_disk[1100], data_sound[1100];
+  {
+    /* A launcher build keeps its data in data/ next to the executable. */
+    const char* base = SDL_GetBasePath();
+    if (base) {
+      snprintf(data_ram, sizeof data_ram, "%sdata/entry_ram.bin", base);
+      if (file_exists(data_ram)) {
+        snprintf(data_regs, sizeof data_regs, "%sdata/entry_regs.json", base);
+        snprintf(data_disk, sizeof data_disk, "%sdata/nbashowt.chd", base);
+        snprintf(data_sound, sizeof data_sound, "%sdata/vegassio.bin", base);
+        ram = data_ram, regs = data_regs, disk = data_disk, sound = data_sound;
+      }
+    }
+  }
+  const char* game_lib = NULL;
   float scale = 0;
   int win_w = 1280, win_h = 960, fullscreen = 0, hidden = 0, no_sound = 0;
   float volume = 3.0f;
@@ -350,6 +376,7 @@ int main(int argc, char** argv) {
     else if (ARG("--regs")) regs = next;
     else if (ARG("--disk")) disk = next;
     else if (ARG("--sound")) sound = next;
+    else if (ARG("--game")) game_lib = next;
     else if (ARG("--scale")) scale = (float)atof(next);
     else if (ARG("--window")) sscanf(next, "%dx%d", &win_w, &win_h);
     else if (ARG("--aspect")) {
@@ -375,6 +402,23 @@ int main(int argc, char** argv) {
   }
   if (!H.dump_every) H.dump_every = 1;
 
+#ifndef NBA_STATIC_GAME
+  {
+    /* The recompiled game lives in a library the launcher built from the player's ROM. */
+    static char lib_path[1200], why[1024];
+    if (!game_lib) {
+      game_library_default_path(lib_path, sizeof lib_path);
+      game_lib = lib_path;
+    }
+    if (game_library_load(game_lib, why, sizeof why) != 0) {
+      fprintf(stderr, "%s\n", why);
+      if (!hidden) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NBA Showtime", why, NULL);
+      return 1;
+    }
+  }
+#else
+  (void)game_lib;
+#endif
   vegas_log = quiet_log;
   {
     extern int ide_trace;
@@ -383,9 +427,13 @@ int main(int argc, char** argv) {
   RecompContext ctx;
   {
     /* the VRC5074 / SIO dumps live next to the register JSON */
-    char dir[1024], nile[1100], sio[1100];
+    char dir[1200], nile[1300], sio[1300];
     snprintf(dir, sizeof dir, "%s", regs);
     char* slash = strrchr(dir, '/');
+#ifdef _WIN32
+    char* bslash = strrchr(dir, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+#endif
     if (slash) slash[1] = 0; else dir[0] = 0;
     snprintf(nile, sizeof nile, "%sentry_nile.bin", dir);
     snprintf(sio, sizeof sio, "%sentry_sio.bin", dir);
@@ -441,7 +489,7 @@ int main(int argc, char** argv) {
   H.wall_base_ns = SDL_GetTicksNS();
   H.virt_base = g_vegas.cop0.cycles / 125e6;
 
-  func_80100000(&ctx); /* never returns: the host work happens at each buffer swap */
+  recomp_lookup(&ctx, 0x80100000)(&ctx); /* game entry; never returns: the host work happens at each buffer swap */
   quit(0);
   return 0;
 }
