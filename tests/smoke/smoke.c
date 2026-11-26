@@ -68,6 +68,7 @@ void recomp_break_hit(uint32_t addr) {
 }
 #endif
 
+extern uint64_t g_fpe_count;
 static void summary(const char* why) {
   g_max_events = 1L << 40; /* don't longjmp out of the summary */
   nile_uart_flush();
@@ -97,6 +98,14 @@ static void summary(const char* why) {
                (unsigned long long)g_vegas.irq_count[6], (unsigned long long)g_vegas.irq_count[7],
                (unsigned long long)recomp_proc_created, (unsigned long long)recomp_proc_switches);
   if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+  if (dcs2_present()) {
+    n = snprintf(b, sizeof b, "DCS2 DSP: %llu instructions, %llu host words in, %llu replies, program booted: %s, "
+                 "%llu audio words; FP exceptions taken: %llu\n",
+                 (unsigned long long)g_dcs2_stats.instructions, (unsigned long long)g_dcs2_stats.host_writes,
+                 (unsigned long long)g_dcs2_stats.output_writes, g_dcs2_stats.booted_program ? "yes" : "no",
+                 (unsigned long long)g_dcs2_stats.samples, (unsigned long long)g_fpe_count);
+    if (write(1, b, (size_t)n) < 0) { /* nothing to do */ }
+  }
 }
 
 static void vevent(const char* f, va_list ap) {

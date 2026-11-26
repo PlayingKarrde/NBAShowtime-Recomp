@@ -31,6 +31,15 @@ at the moment the game's crt0 starts).
   anything else calls `recomp_mmio_read/write` (hardware registers).
 - **Floats**: compiled with `-ffp-contract=off`, and `madd.s` is emitted unfused. Float-to-int conversions
   give defined results for NaN and overflow.
+- **FP exceptions** (`runtime/src/fpu.c`): the game's crt0 sets FCSR = `0x01000C00` (FS = flush denormals,
+  Invalid and Divide-by-zero traps enabled). On the board, 0/0, sqrt(-x), inf-inf, a signalling compare
+  (`c.lt`, `c.le`, …) with a NaN operand, or an out-of-range float->int conversion never yields a NaN: it
+  traps (ExcCode 15) into the BIOS FP handler (`0x800135CC`), which decodes the faulting COP1
+  instruction and writes a replacement result into the exception frame. Generated code computes each
+  result into a temporary and, only when it is not finite, calls `recomp_fpe_arith` /
+  `recomp_fpe_invalid`, which raise the exception through the recompiled BIOS handler the same way
+  interrupts are delivered and take the destination value back from the frame. `ctc1 $31` goes through
+  `recomp_set_fcsr`, which mirrors FS and the rounding mode into the host MXCSR (FTZ/DAZ, RC).
 - **Not yet translated** (8 sites, all `recomp_unhandled`): 64-bit mul/div, ldl/ldr/sdl/sdr, and
   immediate traps. They probably all sit in strings or dead code.
 - All 18 generated files compile cleanly with gcc `-Wall -Wextra`. `-Wmisleading-indentation` caught a
@@ -56,15 +65,16 @@ Runs the recompiled BIOS and game from the game's entry point on the runtime mac
 (`runtime/src/vegas_machine.c`: CP0 and interrupts; `ide.c`: disk; `nile.c`: VRC5074 interrupt
 controller and UART). See [hardware.md](hardware.md).
 
-**Current state** (`SMOKE_SECONDS=150 ./build/smoke … 2000 --quiet`):
-- Glide initialises the Banshee and streams command-FIFO packets (21 M words so far, not rendered yet).
-- vblank, the BIOS tick, NVRAM, disk reads/writes and the process scheduler (44 processes, 12k
-  switches) all work.
-- The **emulated DCS2 sound board** boots, receives the sound program, and accepts the sound banks
-  (1.5 M words). The game loads about 290 files: fonts, CMOS formats, sound banks, player/ball textures.
-- **Next blocker**: about 90 s in, a game process spins in floating-point code (`func_80198F80`, a
-  float search loop around `0x80199014`) and the BIOS watchdog fires. This is probably an FPU semantics
-  difference in the generated code (compare/NaN/conversion); not investigated yet.
+**Current state** (`SMOKE_SECONDS=300 ./build/smoke … 2000 --quiet`, about 780 s of virtual time):
+- Glide initialises the Banshee and streams command-FIFO packets (940 M words, not rendered yet).
+- vblank, the BIOS tick, NVRAM, disk reads/writes and the process scheduler (about 960 processes created,
+  560k switches) all work; the game keeps streaming from disk (about 1 M sectors), apparently looping
+  its attract sequence.
+- The **emulated DCS2 sound board** boots, receives the sound program and the sound banks, and produces
+  continuous audio (not played on the host yet).
+- The BIOS FP exception handler is exercised (about 260 traps, e.g. a divide by zero at `0x80124898`).
+  Before FP exceptions were modelled, a NaN reached the arcsine table search `func_80198F80`, which
+  never terminates for a NaN argument, and the BIOS watchdog fired about 90 s in.
 
 ## Game processes (runtime/src/proc.c)
 The game's scheduler (main loop `0x801B4270`) resumes a process by restoring its registers, swapping

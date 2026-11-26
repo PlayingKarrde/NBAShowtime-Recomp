@@ -203,15 +203,18 @@ struct Gen {
       case Op::DMFC1: return set(i.rt, fmt("fpr_l(ctx, %d)", i.fs));
       case Op::DMTC1: return fmt("set_fpr_l(ctx, %d, %s);", i.fs, r(i.rt).c_str());
       case Op::CFC1: return set32(i.rt, i.fs == 31 ? std::string("ctx->fcsr") : std::string("0x2310u"));
-      case Op::CTC1: return i.fs == 31 ? fmt("ctx->fcsr = %s;", r32(i.rt).c_str()) : "";
+      case Op::CTC1: return i.fs == 31 ? fmt("recomp_set_fcsr(ctx, %s);", r32(i.rt).c_str()) : "";
       // FPU arithmetic
+      // Arithmetic: the result goes through a temporary; a non-finite one is checked against the
+      // FCSR exception enables (an enabled Invalid/Divide-by-zero traps into the BIOS handler).
       case Op::FADD: case Op::FSUB: case Op::FMUL: case Op::FDIV: {
         const char* o = i.op == Op::FADD ? "+" : i.op == Op::FSUB ? "-" : i.op == Op::FMUL ? "*" : "/";
-        return fmt("%s(ctx, %d, %s(ctx, %d) %s %s(ctx, %d));", fp_set(i.fmt), i.fd, fp_get(i.fmt), i.fs, o,
-                   fp_get(i.fmt), i.ft);
+        return fp_checked(i, pc, fmt("_a %s _b", o), i.op == Op::FDIV ? "RECOMP_FPE_DIV" : "RECOMP_FPE_GENERIC",
+                          fmt("%s(ctx, %d)", fp_get(i.fmt), i.fs), fmt("%s(ctx, %d)", fp_get(i.fmt), i.ft), "0");
       }
-      case Op::FSQRT: return fmt("%s(ctx, %d, %s(%s(ctx, %d)));", fp_set(i.fmt), i.fd,
-                                 i.fmt == mips::FMT_D ? "sqrt" : "sqrtf", fp_get(i.fmt), i.fs);
+      case Op::FSQRT:
+        return fp_checked(i, pc, i.fmt == mips::FMT_D ? "sqrt(_a)" : "sqrtf(_a)", "RECOMP_FPE_SQRT",
+                          fmt("%s(ctx, %d)", fp_get(i.fmt), i.fs), "0", "0");
       case Op::FABS: return fmt("%s(ctx, %d, %s(%s(ctx, %d)));", fp_set(i.fmt), i.fd,
                                 i.fmt == mips::FMT_D ? "fabs" : "fabsf", fp_get(i.fmt), i.fs);
       case Op::FNEG: return fmt("%s(ctx, %d, -%s(ctx, %d));", fp_set(i.fmt), i.fd, fp_get(i.fmt), i.fs);
@@ -225,19 +228,25 @@ struct Gen {
                                               : fmt("ctx->f[%d] = ctx->f[%d];", i.fd, i.fs);
         return "if (" + c + ") " + mv;
       }
-      case Op::FRECIP: return fmt("%s(ctx, %d, (%s)1 / %s(ctx, %d));", fp_set(i.fmt), i.fd, fp_type(i.fmt), fp_get(i.fmt), i.fs);
+      case Op::FRECIP:
+        return fp_checked(i, pc, fmt("(%s)1 / _a", fp_type(i.fmt)), "RECOMP_FPE_RECIP",
+                          fmt("%s(ctx, %d)", fp_get(i.fmt), i.fs), "0", "0");
       case Op::FRSQRT:
-        return fmt("%s(ctx, %d, (%s)1 / %s(%s(ctx, %d)));", fp_set(i.fmt), i.fd, fp_type(i.fmt),
-                   i.fmt == mips::FMT_D ? "sqrt" : "sqrtf", fp_get(i.fmt), i.fs);
+        return fp_checked(i, pc, fmt("(%s)1 / %s(_a)", fp_type(i.fmt), i.fmt == mips::FMT_D ? "sqrt" : "sqrtf"),
+                          "RECOMP_FPE_RSQRT", fmt("%s(ctx, %d)", fp_get(i.fmt), i.fs), "0", "0");
       case Op::FROUND_W: case Op::FTRUNC_W: case Op::FCEIL_W: case Op::FFLOOR_W: case Op::FCVT_W: {
         int mode = i.op == Op::FROUND_W ? 0 : i.op == Op::FTRUNC_W ? 1 : i.op == Op::FCEIL_W ? 2
                  : i.op == Op::FFLOOR_W ? 3 : -1;
-        return fmt("ctx->f[%d] = (uint32_t)recomp_cvt_w(%s(ctx, %d), %d);", i.fd, fp_get(i.fmt), i.fs, mode);
+        return fmt("{ double _v = %s(ctx, %d); if (RECOMP_UNLIKELY(recomp_cvt_w_bad(_v)) && "
+                   "recomp_fpe_invalid(ctx, 0x%08Xu)) {} else ctx->f[%d] = (uint32_t)recomp_cvt_w(_v, %d); }",
+                   fp_get(i.fmt), i.fs, pc, i.fd, mode);
       }
       case Op::FROUND_L: case Op::FTRUNC_L: case Op::FCEIL_L: case Op::FFLOOR_L: case Op::FCVT_L: {
         int mode = i.op == Op::FROUND_L ? 0 : i.op == Op::FTRUNC_L ? 1 : i.op == Op::FCEIL_L ? 2
                  : i.op == Op::FFLOOR_L ? 3 : -1;
-        return fmt("set_fpr_l(ctx, %d, (uint64_t)recomp_cvt_l(%s(ctx, %d), %d));", i.fd, fp_get(i.fmt), i.fs, mode);
+        return fmt("{ double _v = %s(ctx, %d); if (RECOMP_UNLIKELY(recomp_cvt_l_bad(_v)) && "
+                   "recomp_fpe_invalid(ctx, 0x%08Xu)) {} else set_fpr_l(ctx, %d, (uint64_t)recomp_cvt_l(_v, %d)); }",
+                   fp_get(i.fmt), i.fs, pc, i.fd, mode);
       }
       case Op::FCVT_S: case Op::FCVT_D: {
         std::string src;
@@ -249,8 +258,13 @@ struct Gen {
                                   : fmt("set_fpr_d(ctx, %d, (double)%s);", i.fd, src.c_str());
       }
       case Op::FC_COND:
-        return fmt("set_fcc(ctx, %d, fcmp(%s(ctx, %d), %s(ctx, %d), %d));", i.cc, fp_get(i.fmt), i.fs,
-                   fp_get(i.fmt), i.ft, i.cond & 7);
+        if (!(i.cond & 8))
+          return fmt("set_fcc(ctx, %d, fcmp(%s(ctx, %d), %s(ctx, %d), %d));", i.cc, fp_get(i.fmt), i.fs,
+                     fp_get(i.fmt), i.ft, i.cond & 7);
+        // Signalling compares (c.sf .. c.ngt, incl. c.lt / c.le) raise Invalid on unordered operands.
+        return fmt("{ %s _a = %s(ctx, %d), _b = %s(ctx, %d); if (RECOMP_UNLIKELY(_a != _a || _b != _b) && "
+                   "recomp_fpe_invalid(ctx, 0x%08Xu)) {} else set_fcc(ctx, %d, fcmp(_a, _b, %d)); }",
+                   fp_type(i.fmt), fp_get(i.fmt), i.fs, fp_get(i.fmt), i.ft, pc, i.cc, i.cond & 7);
       case Op::FMADD: case Op::FMSUB: case Op::FNMADD: case Op::FNMSUB: {
         // Unfused: product rounded to format precision before the add (compiled with -ffp-contract=off).
         const char* t = fp_type(i.fmt);
@@ -258,12 +272,25 @@ struct Gen {
         std::string fr = fmt("%s(ctx, %d)", fp_get(i.fmt), i.fr);
         std::string e = i.op == Op::FMADD ? prod + " + " + fr : i.op == Op::FMSUB ? prod + " - " + fr
                       : i.op == Op::FNMADD ? "-(" + prod + " + " + fr + ")" : "-(" + prod + " - " + fr + ")";
-        return fmt("%s(ctx, %d, (%s)(%s));", fp_set(i.fmt), i.fd, t, e.c_str());
+        (void)t;
+        return fp_checked(i, pc, fmt("(%s)(%s)", t, e.c_str()), "RECOMP_FPE_GENERIC",
+                          fmt("%s(ctx, %d)", fp_get(i.fmt), i.fs), fmt("%s(ctx, %d)", fp_get(i.fmt), i.ft),
+                          fmt("%s(ctx, %d)", fp_get(i.fmt), i.fr));
       }
       default:
         stats.unhandled_ops++;
         return fmt("recomp_unhandled(ctx, 0x%08Xu, \"%s\");", pc, std::string(mips::op_name(i.op)).c_str());
     }
+  }
+
+  // `expr` uses _a/_b/_c (the operands, read before fd is written) and yields the result.
+  std::string fp_checked(const mips::Insn& i, uint32_t pc, const std::string& expr, const char* kind,
+                         const std::string& a, const std::string& b, const std::string& c) {
+    const char* t = fp_type(i.fmt);
+    return fmt("{ %s _a = %s, _b = %s, _c = %s; %s _r = %s; (void)_b; (void)_c; "
+               "if (RECOMP_UNLIKELY(!isfinite(_r)) && recomp_fpe_arith(ctx, 0x%08Xu, %s, _a, _b, _c, _r)) {} "
+               "else %s(ctx, %d, _r); }",
+               t, a.c_str(), b.c_str(), c.c_str(), t, expr.c_str(), pc, kind, fp_set(i.fmt), i.fd);
   }
 
   static uint64_t SE32v(uint32_t v) { return uint64_t(int64_t(int32_t(v))); }

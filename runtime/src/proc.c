@@ -55,7 +55,10 @@ static void fiber_destroy(HostFiber f) { DeleteFiber(f); }
 #else
 static HostFiberImpl scheduler_impl;
 static void ensure_scheduler(void) { scheduler_fiber = &scheduler_impl; }
-static void fiber_switch(HostFiber from, HostFiber to) { swapcontext(&from->uc, &to->uc); }
+static void fiber_switch(HostFiber from, HostFiber to) {
+  swapcontext(&from->uc, &to->uc);
+  recomp_fpu_host_sync(); /* the saved context may carry an older MXCSR */
+}
 static void fiber_entry(void);
 static HostFiber fiber_create(void) {
   HostFiberImpl* f = calloc(1, sizeof *f);
@@ -82,6 +85,7 @@ static void WINAPI fiber_entry(LPVOID arg) {
 #else
 static void fiber_entry(void) {
 #endif
+  recomp_fpu_host_sync();
   Proc* self = starting;
   for (;;) {
     recomp_lookup(g_ctx, self->entry)(g_ctx);

@@ -183,6 +183,18 @@ static inline int fcmp(double a, double b, int cond) {
 /* Float -> integer conversions with defined results for NaN/overflow
    (the hardware would raise Invalid; with traps off it yields 0x7fffffff). */
 int32_t recomp_cvt_w(double v, int mode); /* mode: 0 round, 1 trunc, 2 ceil, 3 floor, -1 = FCSR */
+static inline int recomp_cvt_w_bad(double v) { return !(v > -2147483648.5 && v < 2147483647.5); }
+static inline int recomp_cvt_l_bad(double v) { return !(v > -9.2233720368547758e18 && v < 9.2233720368547758e18); }
+
+/* FP exceptions (runtime/src/fpu.c). Generated code checks results inline and calls these only
+   for non-finite results / invalid conversions; a nonzero return means the BIOS FP exception
+   handler supplied the result (the destination register must not be written). */
+enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_FPE_RSQRT = 3, RECOMP_FPE_RECIP = 4 };
+int recomp_fpe_arith(RecompContext* ctx, uint32_t pc, int kind, double a, double b, double c, double r);
+int recomp_fpe_invalid(RecompContext* ctx, uint32_t pc);
+void recomp_set_fcsr(RecompContext* ctx, uint32_t v); /* ctc1 $31: also applies FS / RM to the host FPU */
+void recomp_fpu_host_sync(void);                      /* re-apply after a host context switch */
+#define RECOMP_UNLIKELY(x) __builtin_expect(!!(x), 0)
 int64_t recomp_cvt_l(double v, int mode);
 
 #ifdef __cplusplus

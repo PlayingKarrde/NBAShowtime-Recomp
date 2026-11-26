@@ -60,6 +60,16 @@ bit 31 = end of table}). The BIOS uses READ DMA (C8) / WRITE DMA (CA) and waits 
 interrupt. Status register reads acknowledge it. The model serves sectors from `work/nbashowt.img`;
 writes go to an in-memory overlay.
 
+### Floating-point exceptions
+The game runs with FCSR = `0x01000C00`: FS (denormals flush to zero) plus the Invalid and
+Divide-by-zero enables. Those exceptions arrive as ExcCode 15; the BIOS handler (`0x800135CC`)
+dispatches each set cause bit through the table at `0x8002A370` (Inexact, Underflow, Overflow,
+Divide-by-zero `0x80012758`, Invalid `0x800130D0`, Unimplemented). The Divide-by-zero and Invalid
+handlers first call an optional game hook (`0x800DE474` / `0x800DE478`), then emulate the faulting
+instruction from the frame. Frame layout beyond the integer part: FPR n as a 64-bit slot at
+`0x218 + 8n` (saved with FR=1, so slot 2k holds the FR=0 pair f2k/f2k+1), FIR at `0x318`, FCSR at
+`0x31C`.
+
 ## Midway I/O ASIC (0x04800000) and DCS2 sound board
 Measured on the real game with `tools/mame/trace_mmio.lua` (memory taps, installed after boot because
 the VRC5074 remaps its windows during BIOS start-up). The registers are 16-bit, 2 bytes apart:
