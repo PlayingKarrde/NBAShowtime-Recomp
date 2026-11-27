@@ -19,6 +19,7 @@ permissions:
   contents: write
 
 env:
+  LLVM_MINGW_VERSION: "20260616"
   LLVM_MINGW: llvm-mingw-20260616-ucrt-x86_64
   SDL3_VERSION: 3.4.20
   ZIG_VERSION: 0.17.1
@@ -30,7 +31,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -43,7 +44,7 @@ jobs:
       - name: Download the toolchain
         run: |
           mkdir -p /c/tc && cd /c/tc
-          curl -fsSL -o llvm.zip "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW#llvm-mingw-}/$LLVM_MINGW.zip"
+          curl -fsSL -o llvm.zip "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$LLVM_MINGW.zip"
           curl -fsSL -o sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz"
           curl -fsSL -o zig.zip "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-windows-$ZIG_VERSION.zip"
           7z x -y llvm.zip > /dev/null
@@ -82,7 +83,7 @@ jobs:
           7z a -tzip -mx=9 "../$PACKAGE.zip" . > /dev/null
           ls -la ..
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ env.PACKAGE }}
           path: dist/${{ env.PACKAGE }}.zip
