@@ -188,6 +188,12 @@ saves, none of which a release contains. Never ship a `settings.ini`.
 Zip it as `NBAShowtime-Recomp-<version>-Windows-x64.zip` (or `-Linux-x64.tar.gz`), with the files
 at the top of the zip or in one folder, and attach it to a GitHub release.
 
+`.github/workflows/release.yml` does all of this for Windows: push a tag (`git tag v0.2.0`,
+`git push origin v0.2.0`) and it builds with llvm-mingw, bundles SDL3 and Zig, checks the folder,
+and publishes `NBAShowtime-Recomp-<tag>-Windows-x64.zip` as a release with
+`packaging/release-notes.md` as its text. Run it by hand from the Actions tab to mark one as a
+pre-release (a RecompLauncher beta).
+
 The unpacked size is about 420 MB, almost all of it Zig. Its `lib/libc` holds headers for every
 target and could be trimmed to the release's own platform.
 

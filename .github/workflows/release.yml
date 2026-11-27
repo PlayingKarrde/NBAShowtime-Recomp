@@ -1,0 +1,101 @@
+# Builds the Windows release and publishes it as a GitHub release.
+# Push a tag like v0.1.0 to run it, or start it by hand (Actions, Release, Run workflow).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (created on the current commit if it does not exist)'
+        required: true
+      prerelease:
+        description: 'Mark as a pre-release (a RecompLauncher beta)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  LLVM_MINGW: llvm-mingw-20260616-ucrt-x86_64
+  SDL3_VERSION: 3.4.20
+  ZIG_VERSION: 0.17.1
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Release name
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "PACKAGE=NBAShowtime-Recomp-$tag-Windows-x64" >> "$GITHUB_ENV"
+
+      - name: Download the toolchain
+        run: |
+          mkdir -p /c/tc && cd /c/tc
+          curl -fsSL -o llvm.zip "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW#llvm-mingw-}/$LLVM_MINGW.zip"
+          curl -fsSL -o sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz"
+          curl -fsSL -o zig.zip "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-windows-$ZIG_VERSION.zip"
+          7z x -y llvm.zip > /dev/null
+          tar -xzf sdl3.tar.gz
+          7z x -y zig.zip > /dev/null
+          mv "zig-x86_64-windows-$ZIG_VERSION" zig
+          echo "C:/tc/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+          ninja --version || choco install ninja -y --no-progress
+
+      - name: Configure
+        run: |
+          clang --version
+          cmake -S . -B build-win -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DSDL3_DIR="C:/tc/SDL3-$SDL3_VERSION/x86_64-w64-mingw32/lib/cmake/SDL3" \
+            -DNBA_ZIG_DIR=C:/tc/zig \
+            -DRECOMP_TRACE_CALLS=OFF
+
+      - name: Build
+        run: cmake --build build-win
+
+      - name: Package
+        run: |
+          cmake --install build-win --prefix "dist/$PACKAGE" --strip
+          cd "dist/$PACKAGE"
+          for f in nbashowtime.exe nbalauncher.exe SDL3.dll recomplauncher.json \
+                   engine/include/recomp.h engine/include/recomp_version.h \
+                   engine/module/game_module.c toolchain/zig/zig.exe; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          if ls settings.ini nbagame.dll data 2>/dev/null; then echo "build output in the release"; exit 1; fi
+          # The launcher must reject a ROM set that isn't there (exit 3) without opening a window.
+          set +e; ./nbalauncher.exe --rom=missing.zip --out "$RUNNER_TEMP/out"; code=$?; set -e
+          echo "nbalauncher exit $code"; test "$code" = 3
+          7z a -tzip -mx=9 "../$PACKAGE.zip" . > /dev/null
+          ls -la ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: dist/${{ env.PACKAGE }}.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          [ "${{ inputs.prerelease }}" = "true" ] && flags+=(--prerelease)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "dist/$PACKAGE.zip" --clobber
+          else
+            gh release create "$TAG" "dist/$PACKAGE.zip" --title "NBA Showtime Recomp $TAG" \
+              --target "$GITHUB_SHA" --notes-file packaging/release-notes.md "${flags[@]}"
+          fi
