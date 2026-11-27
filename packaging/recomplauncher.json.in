@@ -1,0 +1,160 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "NBA Showtime Recomp",
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Your NBA Showtime: NBA on NBC ROM set as one .zip, holding nbashowt.zip (BIOS and sound ROM) and nbashowt/nbashowt.chd (ver 2.0).",
+      "formats": [{ "type": "file", "extensions": ["zip"] }]
+    }
+  ],
+  "prepare": {
+    "program": ["nbalauncher.exe", "nbalauncher"],
+    "args": ["--rom={input:game}", "--out", "{install}"],
+    "label": "Building the game from your ROM set",
+    "done": ["{install}/data/built-@NBA_GAME_ABI@.@NBA_CODEGEN_REVISION@.txt"]
+  },
+  "start": {
+    "program": ["nbashowtime.exe", "nbashowtime"],
+    "args": []
+  },
+  "saves": ["{install}/nvram.bin", "{install}/disk.bin"],
+  "config": [
+    {
+      "format": "ini",
+      "file": [{ "path": "{install}/settings.ini" }],
+      "new": {
+        "gameplay/free_play": "on",
+        "gameplay/cabinet_players": "4",
+        "video/fullscreen": "off",
+        "video/aspect": "auto",
+        "video/render_scale": "auto",
+        "video/vsync": "off",
+        "video/sharp_scaling": "off",
+        "audio/volume": "75",
+        "audio/mute_unfocused": "off"
+      }
+    }
+  ],
+  "settings": [
+    {
+      "id": "display",
+      "group": "Video",
+      "label": "Display mode",
+      "help": "Play in a window or fill the whole screen. F11 or Alt+Enter also switch in game.",
+      "choices": [
+        { "label": "Windowed", "set": { "video/fullscreen": "off" } },
+        { "label": "Fullscreen", "set": { "video/fullscreen": "on" } }
+      ],
+      "defaults": { "video/fullscreen": "off" }
+    },
+    {
+      "id": "aspect",
+      "group": "Video",
+      "label": "Aspect ratio",
+      "help": "Auto matches your screen with Hor+ widescreen, up to 32:9; 4:3 is the cabinet's own.",
+      "choices": [
+        { "label": "Auto", "set": { "video/aspect": "auto" } },
+        { "label": "4:3", "set": { "video/aspect": "4:3" } },
+        { "label": "16:10", "set": { "video/aspect": "16:10" } },
+        { "label": "16:9", "set": { "video/aspect": "16:9" } },
+        { "label": "21:9", "set": { "video/aspect": "21:9" } },
+        { "label": "32:9", "set": { "video/aspect": "32:9" } }
+      ],
+      "defaults": { "video/aspect": "auto" }
+    },
+    {
+      "id": "render_scale",
+      "group": "Video",
+      "label": "Render resolution",
+      "help": "Lines the 3D renderer draws. Match Window follows your window's size; 1x is the arcade's own 384 lines.",
+      "choices": [
+        { "label": "Match Window", "set": { "video/render_scale": "auto" } },
+        { "label": "1x (384p, arcade)", "set": { "video/render_scale": "1" } },
+        { "label": "2x (768p)", "set": { "video/render_scale": "2" } },
+        { "label": "3x (1152p)", "set": { "video/render_scale": "3" } },
+        { "label": "4x (1536p)", "set": { "video/render_scale": "4" } }
+      ],
+      "defaults": { "video/render_scale": "auto" }
+    },
+    {
+      "id": "vsync",
+      "group": "Video",
+      "label": "VSync",
+      "help": "Waits for the display's refresh: no tearing, a little more latency. Best on 120 Hz and faster displays.",
+      "choices": [
+        { "label": "Off", "set": { "video/vsync": "off" } },
+        { "label": "On", "set": { "video/vsync": "on" } }
+      ],
+      "defaults": { "video/vsync": "off" }
+    },
+    {
+      "id": "filter",
+      "group": "Video",
+      "label": "Scaling filter",
+      "help": "Smooth scales the image bilinearly; Sharp keeps crisp pixels at 1x.",
+      "advanced": true,
+      "choices": [
+        { "label": "Smooth", "set": { "video/sharp_scaling": "off" } },
+        { "label": "Sharp", "set": { "video/sharp_scaling": "on" } }
+      ],
+      "defaults": { "video/sharp_scaling": "off" }
+    },
+    {
+      "id": "volume",
+      "group": "Audio",
+      "label": "Master volume",
+      "help": "Overall volume of the sound board. The game's own volume (the - and = keys) applies on top.",
+      "slider": { "key": "audio/volume", "min": 0, "max": 100, "step": 5, "format": "%d" },
+      "defaults": { "audio/volume": "75" }
+    },
+    {
+      "id": "mute_unfocused",
+      "group": "Audio",
+      "label": "Mute in background",
+      "help": "Silence the game while its window isn't in front.",
+      "choices": [
+        { "label": "Off", "set": { "audio/mute_unfocused": "off" } },
+        { "label": "On", "set": { "audio/mute_unfocused": "on" } }
+      ],
+      "defaults": { "audio/mute_unfocused": "off" }
+    },
+    {
+      "id": "free_play",
+      "group": "Gameplay",
+      "label": "Free play",
+      "help": "Start and continue games without coins. Off uses the coin settings from the operator menu.",
+      "choices": [
+        { "label": "On", "set": { "gameplay/free_play": "on" } },
+        { "label": "Off", "set": { "gameplay/free_play": "off" } }
+      ],
+      "defaults": { "gameplay/free_play": "on" }
+    },
+    {
+      "id": "cabinet",
+      "group": "Gameplay",
+      "label": "Cabinet",
+      "help": "A 4-player cabinet lets players 3 and 4 join in; a 2-player cabinet has two sets of controls.",
+      "choices": [
+        { "label": "4 players", "set": { "gameplay/cabinet_players": "4" } },
+        { "label": "2 players", "set": { "gameplay/cabinet_players": "2" } }
+      ],
+      "defaults": { "gameplay/cabinet_players": "4" }
+    }
+  ],
+  "looks": { "graphics": "opengl", "lines": 384 },
+  "folders": {
+    "logs": [{ "path": "{install}/logs" }]
+  },
+  "actions": [
+    { "id": "open_logs", "label": "Open the logs folder", "open": "logs" }
+  ],
+  "exit_codes": {
+    "0": "ok",
+    "10": "The game hasn't been built yet. Run setup again from the game's page and pick your ROM set zip.",
+    "11": "This update needs the game built again from your ROM set. Run setup again from the game's page.",
+    "12": "The game's data files are missing or damaged. Run setup again from the game's page and pick your ROM set zip.",
+    "13": "The game couldn't open a window with OpenGL 3.3. Update your graphics driver and try again."
+  }
+}

@@ -42,6 +42,11 @@ struct BuildState {
   void add_log(const std::string& line);
   void set_step(const std::string& s, float p);
   void set_progress(float p);
+
+ private:
+  float echoed_progress = -1;
+  std::string echoed_step;
+  void echo_progress_locked();
 };
 
 // Runs every step; returns false (with the reason in the log) on failure.

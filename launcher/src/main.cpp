@@ -2,7 +2,8 @@
 // once: the result is a standalone folder with the game executable and its data.
 //
 // usage: nbalauncher                                   (window)
-//        nbalauncher --rom PATH --out DIR [--keep-build] [--jobs N]   (no window)
+//        nbalauncher --rom PATH --out DIR [--keep-build] [--jobs N]   (no window: prints
+//        "progress <0..1> <step>" lines; exit codes below and in docs/launcher.md)
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -18,10 +19,23 @@
 
 namespace {
 
+// A packaged release is built where it was unpacked: the engine is already there, and unpacking
+// a newer release over the folder updates it. A developer build installs to ~/Games instead.
 fs::path default_install_dir() {
+  std::error_code ec;
+  if (fs::exists(launcher_dir() / "engine" / "module" / "game_module.c", ec)) return launcher_dir();
   const char* home = SDL_GetUserFolder(SDL_FOLDER_HOME);
   return (home ? from_u8(home) : launcher_dir()) / "Games" / "NBA Showtime";
 }
+
+// Command-line exit codes (also listed in docs/launcher.md).
+enum : int {
+  kExitOk = 0,
+  kExitBuildFailed = 1,
+  kExitUsage = 2,
+  kExitBadRomSet = 3,   // the ROM set is missing a file, or is a different game or version
+  kExitNoToolchain = 4, // the release is incomplete: no engine, game library sources or Zig
+};
 
 void print_romset(const RomSet& rs) {
   std::printf("BIOS:      %s\n", rs.bios.found ? rs.bios.where.c_str() : "MISSING (showtime_mar15_1999.u27)");
@@ -37,28 +51,43 @@ int run_cli(int argc, char** argv) {
     const std::string a = argv[i];
     const char* next = i + 1 < argc ? argv[i + 1] : nullptr;
     if (a == "--rom" && next) rom = from_u8(argv[++i]);
+    else if (a.rfind("--rom=", 0) == 0) rom = from_u8(a.substr(6).c_str());
     else if (a == "--out" && next) out = from_u8(argv[++i]);
+    else if (a.rfind("--out=", 0) == 0) out = from_u8(a.substr(6).c_str());
     else if (a == "--jobs" && next) opt.jobs = std::atoi(argv[++i]);
     else if (a == "--keep-build") opt.keep_build_files = true;
     else {
       std::fprintf(stderr, "usage: nbalauncher [--rom PATH --out DIR [--keep-build] [--jobs N]]\n");
-      return 2;
+      return kExitUsage;
     }
   }
   if (rom.empty()) {
     std::fprintf(stderr, "--rom is required\n");
-    return 2;
+    return kExitUsage;
   }
+  std::printf("progress 0.00 Checking your ROM set\n");
+  std::fflush(stdout);
   const Toolchain tc = find_toolchain();
   for (const auto& p : tc.problems) std::fprintf(stderr, "toolchain: %s\n", p.c_str());
-  if (!tc.ok()) return 1;
+  if (!tc.ok()) return kExitNoToolchain;
   opt.roms = scan_romset(rom);
   print_romset(opt.roms);
-  if (!opt.roms.complete()) return 1;
+  if (!opt.roms.complete()) {
+    std::fprintf(stderr,
+                 "ERROR: %s is not a complete NBA Showtime ROM set. It needs nbashowt.zip (the BIOS and "
+                 "sound ROM) and nbashowt.chd (ver 2.0), for example both in one zip.\n",
+                 u8(rom).c_str());
+    return kExitBadRomSet;
+  }
   opt.install_dir = out;
   BuildState st;
   st.echo_stdout = true;
-  return run_build(opt, tc, st) ? 0 : 1;
+  if (run_build(opt, tc, st)) return kExitOk;
+  {
+    std::lock_guard<std::mutex> lk(st.m);
+    if (!st.log.empty()) std::fprintf(stderr, "%s\n", st.log.back().c_str());
+  }
+  return kExitBuildFailed;
 }
 
 /* ---- window ---- */

@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#include <io.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -73,6 +74,45 @@ static void attach_parent_console(void) {
 #include "renderer_gl.h"
 #include "settings.h"
 #include "vegas.h"
+
+/* Exit codes, for launchers (RecompLauncher shows a message for each, see recomplauncher.json). */
+enum {
+  EXIT_OK = 0,
+  EXIT_ERROR = 1,          /* anything else */
+  EXIT_USAGE = 2,          /* a bad command-line option */
+  EXIT_NO_GAME = 10,       /* the game library (nbagame) is missing: the game has not been built */
+  EXIT_OLD_GAME = 11,      /* the game library is from another version: build it again */
+  EXIT_NO_DATA = 12,       /* data/ is missing or damaged (boot snapshot, disk image, sound ROM) */
+  EXIT_NO_GRAPHICS = 13,   /* no window or OpenGL 3.3 context */
+};
+
+static int started_by_launcher(void) {
+  const char* v = getenv("RECOMPLAUNCHER");
+  return v && !strcmp(v, "1");
+}
+
+/* Without a terminal to show them (a launcher, or a double-click on Windows), the messages go to
+   logs/nbashowtime.log next to settings.ini; the run before is kept as previous.log. */
+#ifdef _WIN32
+__declspec(dllimport) int __stdcall GetConsoleMode(void* console, unsigned long* mode);
+#endif
+static void open_log_file(void) {
+#ifdef _WIN32
+  /* A console (not _isatty, which is also true for NUL) */
+  unsigned long mode;
+  if (_fileno(stderr) >= 0 && GetConsoleMode((void*)_get_osfhandle(_fileno(stderr)), &mode)) return;
+#else
+  if (isatty(fileno(stderr))) return;
+#endif
+  char dir[1300], path[1400], prev[1400];
+  snprintf(dir, sizeof dir, "%slogs", settings_dir());
+  SDL_CreateDirectory(dir);
+  snprintf(path, sizeof path, "%s/nbashowtime.log", dir);
+  snprintf(prev, sizeof prev, "%s/previous.log", dir);
+  remove(prev);
+  rename(path, prev);
+  if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+}
 
 static struct {
   SDL_Window* window;
@@ -649,6 +689,13 @@ int main(int argc, char** argv) {
   int no_save = 0;
   int win_w = 1280, win_h = 960, hidden = 0, no_sound = 0;
   settings_load();
+  open_log_file();
+  {
+    /* Started from RecompLauncher's Big Picture mode (a controller, maybe no keyboard): full
+       screen for this run, without changing the saved setting. */
+    const char* mode = getenv("RECOMPLAUNCHER_MODE");
+    if (mode && !strcmp(mode, "bigpicture")) { g_settings.fullscreen = 1; settings_override(SET_FULLSCREEN); }
+  }
   g_argv = argv;
   H.throttle = 1;
   H.dump_every = 60;
@@ -669,7 +716,7 @@ int main(int argc, char** argv) {
       if (!SDL_strcasecmp(next, "auto")) g_settings.aspect = 0;
       else if (sscanf(next, "%f:%f", &a, &b) == 2 && b > 0) g_settings.aspect = clamp_aspect(a / b);
       else if (atof(next) > 0) g_settings.aspect = clamp_aspect((float)atof(next));
-      else { fprintf(stderr, "--aspect: expected auto, W:H or a number, got %s\n", next); return 2; }
+      else { fprintf(stderr, "--aspect: expected auto, W:H or a number, got %s\n", next); return EXIT_USAGE; }
       settings_override(SET_ASPECT);
     }
     else if (ARG("--dump")) H.dump_dir = next;
@@ -685,7 +732,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--no-save")) no_save = 1;
     else if (!strcmp(a, "--verbose")) H.verbose = 1;
     else if (!strcmp(a, "--perf")) H.perf = 1;
-    else { fprintf(stderr, "unknown option %s (see the comment at the top of src/host/main.c)\n", a); return 2; }
+    else { fprintf(stderr, "unknown option %s (see the comment at the top of src/host/main.c)\n", a); return EXIT_USAGE; }
 #undef ARG
   }
   if (!H.dump_every) H.dump_every = 1;
@@ -702,10 +749,12 @@ int main(int argc, char** argv) {
       game_library_default_path(lib_path, sizeof lib_path);
       game_lib = lib_path;
     }
-    if (game_library_load(game_lib, why, sizeof why) != 0) {
+    const int r = game_library_load(game_lib, why, sizeof why);
+    if (r != 0) {
       fprintf(stderr, "%s\n", why);
-      if (!hidden) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NBA Showtime", why, NULL);
-      return 1;
+      /* A launcher shows its own message for the exit code. */
+      if (!hidden && !started_by_launcher()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NBA Showtime", why, NULL);
+      return r == -2 ? EXIT_OLD_GAME : EXIT_NO_GAME;
     }
   }
 #else
@@ -729,10 +778,10 @@ int main(int argc, char** argv) {
     if (slash) slash[1] = 0; else dir[0] = 0;
     snprintf(nile, sizeof nile, "%sentry_nile.bin", dir);
     snprintf(sio, sizeof sio, "%sentry_sio.bin", dir);
-    if (vegas_init(disk, nile, sio, sound) != 0) { fprintf(stderr, "cannot open disk image %s\n", disk); return 1; }
+    if (vegas_init(disk, nile, sio, sound) != 0) { fprintf(stderr, "cannot open disk image %s\n", disk); return EXIT_NO_DATA; }
     g_boot.ram = ram, g_boot.regs = regs;
   }
-  if (load_entry(&ctx, ram, regs) != 0) return 1;
+  if (load_entry(&ctx, ram, regs) != 0) return EXIT_NO_DATA;
   apply_dip_switches();
   recomp_exec_started_hook = on_exec_started;
   recomp_exec_unknown_hook = reboot_to_game;
@@ -753,7 +802,7 @@ int main(int argc, char** argv) {
 
   if (!SDL_Init(SDL_INIT_VIDEO | (no_sound ? 0 : SDL_INIT_AUDIO))) {
     fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
-    return 1;
+    return EXIT_NO_GRAPHICS;
   }
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -763,17 +812,17 @@ int main(int argc, char** argv) {
   if (g_settings.fullscreen) flags |= SDL_WINDOW_FULLSCREEN;
   if (hidden) flags |= SDL_WINDOW_HIDDEN;
   H.window = SDL_CreateWindow("NBA Showtime", win_w, win_h, flags);
-  if (!H.window) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
+  if (!H.window) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return EXIT_NO_GRAPHICS; }
   H.gl = SDL_GL_CreateContext(H.window);
-  if (!H.gl) { fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError()); return 1; }
+  if (!H.gl) { fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError()); return EXIT_NO_GRAPHICS; }
   SDL_SyncWindow(H.window); /* let fullscreen take effect before sizing the render target */
-  if (nba_gl_load() != 0) return 1;
+  if (nba_gl_load() != 0) return EXIT_NO_GRAPHICS;
   apply_vsync();
   H.focused = 1;
   {
     float scale;
     wanted_view(&H.aspect, &scale);
-    if (renderer_gl_init(scale, H.aspect, on_frame, NULL) != 0) return 1;
+    if (renderer_gl_init(scale, H.aspect, on_frame, NULL) != 0) return EXIT_NO_GRAPHICS;
     widescreen_patch(H.aspect);
     update_title(H.aspect);
     int w, h;

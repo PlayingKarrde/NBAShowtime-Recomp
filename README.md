@@ -21,15 +21,31 @@ produced from it on your machine.
   buttons. Works with a keyboard, gamepad or mouse, and saves the settings.
 - The game's saved data (CMOS audits and adjustments, and the records it writes to its hard disk)
   is kept between sessions.
-- A launcher that turns the ROM set into a standalone install, so players need neither a
-  compiler nor MAME.
+- A launcher that turns the ROM set into a playable build, so players need neither a compiler
+  nor MAME, and a `recomplauncher.json` so RecompLauncher can set the game up in one click.
 
 ## Playing
-1. Get the launcher (`nbalauncher`) for your platform.
-2. Choose your ROM set: the MAME `nbashowt.zip` together with `nbashowt/nbashowt.chd`, or a
-   folder holding the files. Files are recognised by their content, not their names.
-3. Choose an install folder and press **Build**. A build takes under a minute.
-4. Press **Play**, or run `nbashowtime` from the install folder.
+You need your own ROM set, ideally as **one zip** holding both parts:
+
+```
+NBA Showtime.zip
+  nbashowt.zip              the BIOS and sound ROM (MAME's set)
+  nbashowt/nbashowt.chd     the hard disk
+```
+
+Both must sit in the zip as they are: the CHD can't be inside another zip. A MAME rom folder, or
+any folder holding the files, works too. Files are recognised by their content, not their names.
+
+### With RecompLauncher
+Install NBA Showtime Recomp, pick your ROM set zip on the setup screen, and press **Play**. The
+setup step builds the game from your zip (under a minute on most PCs). Settings are on the game's
+page and in Big Picture mode, where the game starts full screen.
+
+### On its own
+1. Download the release for your platform and unpack it anywhere.
+2. Run `nbalauncher`, choose your ROM set zip and press **Build**. It builds into the folder you
+   unpacked (or pick another one).
+3. Press **Play**, or run `nbashowtime` from that folder.
 
 The ROM set must contain:
 
@@ -39,8 +55,9 @@ The ROM set must contain:
 | sound boot ROM `vegassio.bin` | CRC32 `d1470e23` |
 | disk `nbashowt.chd` | CHD v5, SHA-1 `f7c56bc3dcbebc434de58034986179ae01127f87` |
 
-Most updates replace only the engine, and your existing build keeps working. If an update
-changes the recompiler's output, the game tells you to run its launcher again. See
+Most updates replace only the engine: unpack the new release over the old folder and your build,
+settings and saves stay. If an update changes the recompiler's output, the game asks you to build
+again (RecompLauncher runs its setup step again by itself). See
 [docs/launcher.md](docs/launcher.md).
 
 ### Controls
@@ -69,17 +86,19 @@ nbashowtime [--aspect auto|16:9] [--fullscreen] [--window WxH] [--scale S]
 ```
 The game starts in free play on a 4-player cabinet; both can be changed under Gameplay.
 
-Settings changed in the menu are saved to `settings.ini` in your user data folder
-(`~/.local/share/NBAShowtimeRecomp/` on Linux, `%APPDATA%\NBAShowtimeRecomp\` on Windows), or
-next to the executable if a `settings.ini` is already there. The game's own saved data goes in the
-same folder: `nvram.bin` and `disk.bin` (`--save-dir DIR` puts them elsewhere, `--no-save` keeps
-nothing). Options given on the command line apply to that run only.
+Settings changed in the menu are saved to `settings.ini` next to the executable if one is already
+there (RecompLauncher creates it), otherwise in your user data folder
+(`~/.local/share/NBAShowtimeRecomp/` on Linux, `%APPDATA%\NBAShowtimeRecomp\` on Windows). The
+game's own saved data goes in the same folder: `nvram.bin` and `disk.bin` (`--save-dir DIR` puts
+them elsewhere, `--no-save` keeps nothing). Options given on the command line apply to that run
+only. Without a terminal to print to, the game writes its messages to `logs/nbashowtime.log` in
+the same folder.
 
 ## Platform status
 | platform | status |
 |---|---|
 | Linux | working, tested end to end |
-| Windows | generated code builds with the bundled compiler; engine and launcher untested |
+| Windows | engine and launcher build with clang/MinGW; the launcher's command-line build and the game run; not yet played through |
 | macOS | planned |
 | Android | planned (game library cross-built on desktop) |
 

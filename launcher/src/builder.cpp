@@ -9,6 +9,7 @@
 #include <libchdr/chd.h>
 
 #include "miniz.h"
+#include "recomp_version.h"
 #include "vegas_gen.h"
 
 extern "C" {
@@ -40,17 +41,27 @@ void BuildState::add_log(const std::string& line) {
   log.push_back(line);
   if (echo_stdout) std::printf("%s\n", line.c_str()), std::fflush(stdout);
 }
+// Command-line mode also reports "progress <0..1> <step>" lines, the format RecompLauncher reads
+// from a setup step. Only changes of at least 1% are printed.
+void BuildState::echo_progress_locked() {
+  if (!echo_stdout) return;
+  if (progress < 1.0f && progress - echoed_progress < 0.01f && step == echoed_step) return;
+  echoed_progress = progress;
+  echoed_step = step;
+  std::printf("progress %.2f %s\n", progress, step.c_str());
+  std::fflush(stdout);
+}
 void BuildState::set_step(const std::string& s, float p) {
-  {
-    std::lock_guard<std::mutex> lk(m);
-    step = s;
-    progress = p;
-  }
   add_log("== " + s);
+  std::lock_guard<std::mutex> lk(m);
+  step = s;
+  progress = p;
+  echo_progress_locked();
 }
 void BuildState::set_progress(float p) {
   std::lock_guard<std::mutex> lk(m);
   progress = p;
+  echo_progress_locked();
 }
 
 /* ---- toolchain discovery ---- */
@@ -66,10 +77,12 @@ Toolchain find_toolchain() {
 #endif
   const std::string exe_name = std::string("nbashowtime") + kExe;
 
-  if (fs::exists(packaged / "bin" / exe_name, ec)) {
-    // Packaged: engine/bin holds the engine and its SDL3, installed as they are named.
-    for (const auto& e : fs::directory_iterator(packaged / "bin", ec))
-      if (e.is_regular_file(ec)) tc.engine_files.push_back({e.path(), u8(e.path().filename())});
+  if (fs::exists(base / exe_name, ec) && fs::exists(packaged / "module" / "game_module.c", ec)) {
+    // Packaged release: the engine and SDL3 sit next to the launcher, in the folder the game is
+    // normally built into (so a build there leaves them as they are); engine/ holds what the
+    // game library is compiled with.
+    tc.engine_files.push_back({base / exe_name, exe_name});
+    tc.engine_files.push_back({base / NBA_SDL3_RUNTIME_NAME, NBA_SDL3_RUNTIME_NAME});
     tc.include_dir = packaged / "include";
     tc.module_src = packaged / "module" / "game_module.c";
   } else if (!dev.empty()) {
@@ -82,7 +95,7 @@ Toolchain find_toolchain() {
   }
   bool have_exe = false;
   for (const auto& f : tc.engine_files) have_exe |= f.name == exe_name && fs::exists(f.src, ec);
-  if (!have_exe) tc.problems.push_back("the game engine was not found (expected " + u8(packaged / "bin" / exe_name) + ")");
+  if (!have_exe) tc.problems.push_back("the game engine was not found (expected " + u8(base / exe_name) + ")");
   if (!fs::exists(tc.include_dir / "recomp.h", ec) || !fs::exists(tc.module_src, ec))
     tc.problems.push_back("the game library sources were not found (expected " + u8(packaged / "module") + ")");
 
@@ -332,8 +345,14 @@ bool run_build(const BuildOptions& opt, const Toolchain& tc, BuildState& st) {
   std::string out;
   int code = -1;
   if (!run_process(link, out, code) || code != 0) return fail("link failed:\n" + out);
+#ifdef _WIN32
+  // Zig leaves the DLL's import library next to it, named after the first object; nothing uses it.
+  if (!jobs.empty()) fs::remove(inst / (u8(jobs.front().obj.stem()) + ".lib"), ec);
+#endif
   for (const auto& f : tc.engine_files) {
-    fs::copy_file(f.src, inst / from_u8(f.name), fs::copy_options::overwrite_existing, ec);
+    const fs::path dest = inst / from_u8(f.name);
+    if (fs::exists(dest, ec) && fs::equivalent(f.src, dest, ec)) continue;  // built in place
+    fs::copy_file(f.src, dest, fs::copy_options::overwrite_existing, ec);
     if (ec) return fail("cannot copy " + u8(f.src) + ": " + ec.message());
   }
   const fs::path exe = game_executable(inst);
@@ -350,6 +369,16 @@ bool run_build(const BuildOptions& opt, const Toolchain& tc, BuildState& st) {
                              "\nBIOS: " + opt.roms.bios.where + "\nSound ROM: " + opt.roms.sound.where +
                              "\nDisk: " + opt.roms.disk.where + "\n";
     write_file(data / "build.txt", info.data(), info.size());
+    // A marker named after the game library's interface and codegen revision. RecompLauncher's
+    // setup step lists it under "done": a release that needs the game rebuilt names another
+    // marker, so the step runs again.
+    std::vector<fs::path> old;
+    for (const auto& e : fs::directory_iterator(data, ec))
+      if (u8(e.path().filename()).rfind("built-", 0) == 0 && e.path().extension() == ".txt") old.push_back(e.path());
+    for (const auto& p : old) fs::remove(p, ec);
+    const std::string marker = "built-" + std::to_string(RECOMP_GAME_ABI) + "." +
+                               std::to_string(RECOMP_CODEGEN_REVISION) + ".txt";
+    write_file(data / marker, info.data(), info.size());
   }
   if (!opt.keep_build_files) fs::remove_all(work, ec);
   st.set_step("Done", 1.0f);

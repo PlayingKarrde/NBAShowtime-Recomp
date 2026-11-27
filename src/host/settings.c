@@ -202,8 +202,16 @@ void settings_save(void) {
   fprintf(f, "# NBA Showtime Recomp settings (also changed from the in-game menu: Esc, or L3+R3)\n\n");
   fprintf(f, "[gameplay]\nfree_play = %s\ncabinet_players = %d\n\n", s.free_play ? "on" : "off", s.four_player ? 4 : 2);
   fprintf(f, "[video]\nfullscreen = %s\n", s.fullscreen ? "on" : "off");
-  if (s.aspect > 0) fprintf(f, "aspect = %.4f\n", s.aspect);
-  else fprintf(f, "aspect = auto\n");
+  {
+    /* The menu's ratios by name (as launchers write them too), anything else as a number. */
+    static const struct { int w, h; } named[] = {{4, 3}, {16, 10}, {16, 9}, {21, 9}, {32, 9}};
+    char buf[32] = "auto";
+    if (s.aspect > 0) snprintf(buf, sizeof buf, "%.4f", s.aspect);
+    for (size_t i = 0; s.aspect > 0 && i < sizeof named / sizeof named[0]; ++i)
+      if (fabsf(s.aspect - (float)named[i].w / (float)named[i].h) < 0.001f)
+        snprintf(buf, sizeof buf, "%d:%d", named[i].w, named[i].h);
+    fprintf(f, "aspect = %s\n", buf);
+  }
   if (s.render_scale > 0) fprintf(f, "render_scale = %g\n", s.render_scale);
   else fprintf(f, "render_scale = auto\n");
   fprintf(f, "vsync = %s\nsharp_scaling = %s\n\n", s.vsync ? "on" : "off", s.sharp_scaling ? "on" : "off");

@@ -35,12 +35,14 @@ add_custom_command(
 add_executable(nbalauncher src/main.cpp src/builder.cpp src/romset.cpp src/util.cpp
                ${CMAKE_CURRENT_BINARY_DIR}/boot_assets.c)
 target_link_libraries(nbalauncher PRIVATE launcher_imgui recomp_gen chdr_unity SDL3::SDL3)
+target_include_directories(nbalauncher PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include) # recomp_version.h
 
 # Developer fallbacks, used when the launcher runs from the build tree rather than a packaged
 # release: the engine built here (a trace build has none to offer), the headers and glue file
 # in the source tree, and the toolchain/ folder.
 set(NBA_SDL3_RUNTIME_NAME "$<IF:$<BOOL:${WIN32}>,SDL3.dll,$<TARGET_SONAME_FILE_NAME:SDL3::SDL3>>")
-target_compile_definitions(nbalauncher PRIVATE NBA_DEV_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(nbalauncher PRIVATE NBA_DEV_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
+  NBA_SDL3_RUNTIME_NAME="${NBA_SDL3_RUNTIME_NAME}")
 set(NBA_HAVE_ENGINE OFF)
 if(TARGET nbashowtime AND NOT RECOMP_TRACE_CALLS)
   set(NBA_HAVE_ENGINE ON)
@@ -48,7 +50,7 @@ if(TARGET nbashowtime AND NOT RECOMP_TRACE_CALLS)
   target_compile_definitions(nbalauncher PRIVATE
     NBA_DEV_ENGINE_EXE="$<TARGET_FILE:nbashowtime>"
     NBA_DEV_SDL3_LIB="$<TARGET_FILE:SDL3::SDL3>"
-    NBA_DEV_SDL3_SONAME="${NBA_SDL3_RUNTIME_NAME}")
+    NBA_DEV_SDL3_SONAME=NBA_SDL3_RUNTIME_NAME)
 else()
   message(STATUS "launcher: no engine in this build tree (RECOMP_TRACE_CALLS is on); "
                  "it will only work from a packaged release")
@@ -58,8 +60,11 @@ if(WIN32)
 endif()
 
 # ---- Release layout: cmake --install <build> --prefix dist/<platform> (see docs/launcher.md) ----
-#   nbalauncher, SDL3            the launcher
-#   engine/bin/                  nbashowtime + SDL3, copied into every install
+# One folder, which is also where the game gets built (by nbalauncher, or by RecompLauncher's
+# setup step), so unpacking a newer release over it updates the engine in place:
+#   nbashowtime, SDL3            the engine
+#   nbalauncher                  builds nbagame + data/ from the player's ROM set
+#   recomplauncher.json          how RecompLauncher sets the game up and starts it
 #   engine/include/, module/     what the game library is compiled with
 #   toolchain/zig/               the compiler
 set(NBA_ZIG_DIR "${CMAKE_SOURCE_DIR}/toolchain/zig" CACHE PATH "Zig toolchain to bundle with the launcher")
@@ -67,8 +72,7 @@ set_target_properties(nbalauncher PROPERTIES INSTALL_RPATH "$ORIGIN")
 install(TARGETS nbalauncher RUNTIME DESTINATION .)
 install(FILES $<TARGET_FILE:SDL3::SDL3> DESTINATION . RENAME ${NBA_SDL3_RUNTIME_NAME})
 if(NBA_HAVE_ENGINE)
-  install(TARGETS nbashowtime RUNTIME DESTINATION engine/bin)
-  install(FILES $<TARGET_FILE:SDL3::SDL3> DESTINATION engine/bin RENAME ${NBA_SDL3_RUNTIME_NAME})
+  install(TARGETS nbashowtime RUNTIME DESTINATION .)
 endif()
 install(FILES ${CMAKE_SOURCE_DIR}/runtime/include/recomp.h ${CMAKE_SOURCE_DIR}/runtime/include/recomp_version.h
         DESTINATION engine/include)
@@ -76,3 +80,15 @@ install(FILES ${CMAKE_SOURCE_DIR}/runtime/module/game_module.c DESTINATION engin
 if(EXISTS ${NBA_ZIG_DIR})
   install(DIRECTORY ${NBA_ZIG_DIR}/ DESTINATION toolchain/zig USE_SOURCE_PERMISSIONS)
 endif()
+
+# recomplauncher.json, with the setup step's "done" marker named after the game library's
+# interface and codegen revision (the launcher writes data/built-<abi>.<revision>.txt): a release
+# that needs the game rebuilt makes RecompLauncher run the setup step again.
+file(READ ${CMAKE_SOURCE_DIR}/runtime/include/recomp_version.h NBA_VERSION_H)
+string(REGEX MATCH "#define RECOMP_GAME_ABI ([0-9]+)" _ "${NBA_VERSION_H}")
+set(NBA_GAME_ABI ${CMAKE_MATCH_1})
+string(REGEX MATCH "#define RECOMP_CODEGEN_REVISION ([0-9]+)" _ "${NBA_VERSION_H}")
+set(NBA_CODEGEN_REVISION ${CMAKE_MATCH_1})
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/include/recomp_version.h)
+configure_file(${CMAKE_SOURCE_DIR}/packaging/recomplauncher.json.in ${CMAKE_BINARY_DIR}/recomplauncher.json @ONLY)
+install(FILES ${CMAKE_BINARY_DIR}/recomplauncher.json DESTINATION .)
