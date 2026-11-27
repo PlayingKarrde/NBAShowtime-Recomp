@@ -42,6 +42,20 @@
 #endif
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h> /* WinMain on Windows, where the engine is a GUI program */
+
+#ifdef _WIN32
+/* The engine is built as a GUI program on Windows (no console window behind the game). Run from a
+   terminal, it borrows that terminal's console so messages still show; redirected output is
+   left alone. */
+__declspec(dllimport) int __stdcall AttachConsole(unsigned long process_id);
+static void attach_parent_console(void) {
+  if (_fileno(stdout) >= 0 && _fileno(stderr) >= 0) return; /* already redirected */
+  if (!AttachConsole((unsigned long)-1 /* ATTACH_PARENT_PROCESS */)) return;
+  if (_fileno(stdout) < 0) freopen("CONOUT$", "w", stdout);
+  if (_fileno(stderr) < 0) freopen("CONOUT$", "w", stderr);
+}
+#endif
 
 #include "../../runtime/src/dcs2.h"
 #include "../../runtime/src/ioasic.h"
@@ -609,6 +623,9 @@ static int file_exists(const char* path) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+  attach_parent_console();
+#endif
   const char* ram = "work/dumps/entry_ram.bin";
   const char* regs = "work/dumps/entry_regs.json";
   const char* disk = "work/nbashowt.img";

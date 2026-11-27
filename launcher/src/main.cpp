@@ -354,7 +354,22 @@ int run_window() {
 
 }  // namespace
 
+#ifdef _WIN32
+// The launcher is a GUI program on Windows. In command-line mode, run from a terminal, it borrows
+// that terminal's console so the build log shows; redirected output is left alone.
+extern "C" __declspec(dllimport) int __stdcall AttachConsole(unsigned long process_id);
+static void attach_parent_console() {
+  if (_fileno(stdout) >= 0 && _fileno(stderr) >= 0) return;
+  if (!AttachConsole(static_cast<unsigned long>(-1) /* ATTACH_PARENT_PROCESS */)) return;
+  if (_fileno(stdout) < 0) std::freopen("CONOUT$", "w", stdout);
+  if (_fileno(stderr) < 0) std::freopen("CONOUT$", "w", stderr);
+}
+#endif
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+  if (argc > 1) attach_parent_console();
+#endif
   if (argc > 1) return run_cli(argc, argv);
   return run_window();
 }

@@ -2,6 +2,16 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 std::string u8(const fs::path& p) {
   const std::u8string s = p.u8string();
   return std::string(s.begin(), s.end());
@@ -51,6 +61,95 @@ static SDL_PropertiesID process_props(const std::vector<const char*>& argv, cons
   return props;
 }
 
+#ifdef _WIN32
+// Windows: CreateProcess directly, with CREATE_NO_WINDOW. The launcher is a GUI program with no
+// console, so every console child (zig, and the clang processes zig starts) would otherwise get
+// a console window of its own. With this flag they share one hidden console.
+static std::wstring widen(const std::string& s) {
+  if (s.empty()) return {};
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+  std::wstring w(n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+  return w;
+}
+
+// One argument quoted the way CommandLineToArgvW / the C runtime split it back.
+static void append_quoted(std::wstring& cmd, const std::wstring& arg) {
+  if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+    cmd += arg;
+    return;
+  }
+  cmd += L'"';
+  for (size_t i = 0;; ++i) {
+    size_t slashes = 0;
+    while (i < arg.size() && arg[i] == L'\\') ++i, ++slashes;
+    if (i == arg.size()) {
+      cmd.append(slashes * 2, L'\\');  // before the closing quote
+      break;
+    }
+    if (arg[i] == L'"') {
+      cmd.append(slashes * 2 + 1, L'\\');
+      cmd += L'"';
+    } else {
+      cmd.append(slashes, L'\\');
+      cmd += arg[i];
+    }
+  }
+  cmd += L'"';
+}
+
+bool run_process(const std::vector<std::string>& args, std::string& output, int& exit_code,
+                 const fs::path& working_dir) {
+  output.clear();
+  exit_code = -1;
+  std::wstring cmd;
+  for (const auto& a : args) {
+    if (!cmd.empty()) cmd += L' ';
+    append_quoted(cmd, widen(a));
+  }
+
+  SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
+  HANDLE rd = nullptr, wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) {
+    output = "CreatePipe failed";
+    return false;
+  }
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+  HANDLE nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof si;
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = nul;
+  si.hStdOutput = wr;
+  si.hStdError = wr;
+  PROCESS_INFORMATION pi = {};
+  const std::wstring wd = working_dir.empty() ? std::wstring() : working_dir.wstring();
+  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                                 nullptr, wd.empty() ? nullptr : wd.c_str(), &si, &pi);
+  const DWORD err = GetLastError();
+  CloseHandle(wr);
+  if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+  if (!ok) {
+    CloseHandle(rd);
+    char buf[256];
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err, 0, buf, sizeof buf, nullptr);
+    output = "cannot run " + (args.empty() ? std::string() : args[0]) + ": " + buf;
+    return false;
+  }
+  char buf[4096];
+  DWORD n = 0;
+  while (ReadFile(rd, buf, sizeof buf, &n, nullptr) && n > 0) output.append(buf, n);
+  CloseHandle(rd);
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = 0;
+  GetExitCodeProcess(pi.hProcess, &code);
+  exit_code = (int)code;
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return true;
+}
+#else
 bool run_process(const std::vector<std::string>& args, std::string& output, int& exit_code,
                  const fs::path& working_dir) {
   std::vector<const char*> argv;
@@ -76,6 +175,7 @@ bool run_process(const std::vector<std::string>& args, std::string& output, int&
   SDL_DestroyProcess(proc);
   return true;
 }
+#endif
 
 bool spawn_detached(const std::vector<std::string>& args, const fs::path& working_dir) {
   std::vector<const char*> argv;

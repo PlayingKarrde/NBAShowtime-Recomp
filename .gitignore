@@ -9,3 +9,4 @@ out/
 generated/
 # Bundled compiler (Zig) for launcher builds
 toolchain/
+dist/

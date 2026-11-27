@@ -15,6 +15,11 @@ if(MSVC)
 else()
   add_compile_options(-Wall -Wextra)
 endif()
+if(MINGW)
+  # Link the C/C++ runtime (libstdc++/libc++, libgcc/libunwind, winpthread) statically, so the
+  # engine and launcher need no DLLs besides SDL3.dll.
+  add_link_options(-static)
+endif()
 
 add_subdirectory(tools/recomp)
 
@@ -65,7 +70,10 @@ if(SDL3_FOUND AND NOT RECOMP_TRACE_CALLS)
   add_executable(nbashowtime ${HOST_SOURCES} src/host/game_loader.c)
   target_link_libraries(nbashowtime PRIVATE recomp_runtime_engine SDL3::SDL3 m)
   set_target_properties(nbashowtime PROPERTIES ENABLE_EXPORTS ON) # symbol names in stall reports
-  if(NOT WIN32 AND NOT APPLE)
+  if(WIN32)
+    # A GUI program: no console window behind the game (main.c attaches to a parent terminal).
+    set_target_properties(nbashowtime PROPERTIES WIN32_EXECUTABLE ON)
+  elseif(NOT APPLE)
     # Installed next to its own copy of SDL3 by the launcher.
     set_target_properties(nbashowtime PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
   endif()
