@@ -1,5 +1,7 @@
-# Builds the Windows release and publishes it as a GitHub release.
-# Push a tag like v0.1.0 to run it, or start it by hand (Actions, Release, Run workflow).
+# Builds the Windows and Linux releases and publishes them as one GitHub release.
+# Push a tag like v0.2.0 to build and publish it. Run it by hand (Actions, Release, Run workflow)
+# to build without publishing, or give an existing tag to build that tag and attach the files to
+# its release (creating the release if there is none).
 name: Release
 
 on:
@@ -8,10 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (created on the current commit if it does not exist)'
-        required: true
+        description: 'Existing tag to build and publish (leave empty to build only)'
+        required: false
+        default: ''
       prerelease:
-        description: 'Mark as a pre-release (a RecompLauncher beta)'
+        description: 'Mark a new release as a pre-release (a RecompLauncher beta)'
         type: boolean
         default: false
 
@@ -19,8 +22,10 @@ permissions:
   contents: write
 
 env:
+  TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || format('dev-{0}', github.run_number) }}
   LLVM_MINGW_VERSION: "20260616"
   LLVM_MINGW: llvm-mingw-20260616-ucrt-x86_64
+  LLVM_VERSION: "22"
   SDL3_VERSION: 3.4.20
   ZIG_VERSION: 0.17.1
 
@@ -33,16 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
-
-      - name: Release name
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "PACKAGE=NBAShowtime-Recomp-$tag-Windows-x64" >> "$GITHUB_ENV"
 
       - name: Download the toolchain
         run: |
+          echo "PACKAGE=NBAShowtime-Recomp-$TAG-Windows-x64" >> "$GITHUB_ENV"
           mkdir -p /c/tc && cd /c/tc
           curl -fsSL -o llvm.zip "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$LLVM_MINGW.zip"
           curl -fsSL -o sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz"
@@ -57,7 +58,7 @@ jobs:
       - name: Configure
         run: |
           clang --version
-          cmake -S . -B build-win -G Ninja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DSDL3_DIR="C:/tc/SDL3-$SDL3_VERSION/x86_64-w64-mingw32/lib/cmake/SDL3" \
@@ -65,11 +66,11 @@ jobs:
             -DRECOMP_TRACE_CALLS=OFF
 
       - name: Build
-        run: cmake --build build-win
+        run: cmake --build build
 
       - name: Package
         run: |
-          cmake --install build-win --prefix "dist/$PACKAGE" --strip
+          cmake --install build --prefix "dist/$PACKAGE" --strip
           cd "dist/$PACKAGE"
           for f in nbashowtime.exe nbalauncher.exe SDL3.dll recomplauncher.json \
                    engine/include/recomp.h engine/include/recomp_version.h \
@@ -85,18 +86,110 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: ${{ env.PACKAGE }}
+          name: windows
           path: dist/${{ env.PACKAGE }}.zip
+
+  linux:
+    # The oldest supported Ubuntu, so the release runs on any glibc from 2.35 on (SteamOS too).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: recursive
+
+      - name: Install the toolchain
+        run: |
+          echo "PACKAGE=NBAShowtime-Recomp-$TAG-Linux-x64" >> "$GITHUB_ENV"
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          sudo bash llvm.sh "$LLVM_VERSION"
+          # SDL3's build headers; SDL loads these libraries at run time, so the release needs none.
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev libdecor-0-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libibus-1.0-dev
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/tc" && cd "$RUNNER_TEMP/tc"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ
+          mv "zig-x86_64-linux-$ZIG_VERSION" zig
+          curl -fsSL "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-$SDL3_VERSION.tar.gz" | tar -xz
+
+      - name: Build SDL3
+        run: |
+          cd "$RUNNER_TEMP/tc"
+          cmake -S "SDL3-$SDL3_VERSION" -B sdl-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/tc/sdl3" -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build sdl-build
+          cmake --install sdl-build
+
+      - name: Configure
+        run: |
+          $CC --version
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/tc/sdl3" \
+            -DNBA_ZIG_DIR="$RUNNER_TEMP/tc/zig" \
+            -DRECOMP_TRACE_CALLS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package
+        run: |
+          cmake --install build --prefix "dist/$PACKAGE" --strip
+          cd "dist/$PACKAGE"
+          for f in nbashowtime nbalauncher libSDL3.so.0 recomplauncher.json \
+                   engine/include/recomp.h engine/include/recomp_version.h \
+                   engine/module/game_module.c toolchain/zig/zig; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+          test -x nbashowtime && test -x nbalauncher && test -x toolchain/zig/zig
+          if ls settings.ini nbagame.so data 2>/dev/null; then echo "build output in the release"; exit 1; fi
+          # Both programs must find the SDL3 next to them, not one on the system.
+          for p in nbashowtime nbalauncher; do
+            r=$(ldd "./$p" | awk '/libSDL3\.so\.0/ {print $3}')
+            echo "$p: libSDL3.so.0 => $r"
+            [ "$(realpath "$r")" = "$(realpath libSDL3.so.0)" ] || { echo "$p uses another SDL3"; exit 1; }
+          done
+          echo "newest glibc symbol needed:"
+          objdump -T nbashowtime nbalauncher libSDL3.so.0 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          set +e; ./nbalauncher --rom=missing.zip --out "$RUNNER_TEMP/out"; code=$?; set -e
+          echo "nbalauncher exit $code"; test "$code" = 3
+          cd .. && tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+          ls -la
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux
+          path: dist/${{ env.PACKAGE }}.tar.gz
+
+  publish:
+    needs: [windows, linux]
+    if: github.ref_type == 'tag' || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: files
+          merge-multiple: true
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          flags=()
-          [ "${{ inputs.prerelease }}" = "true" ] && flags+=(--prerelease)
+          ls -la files
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "dist/$PACKAGE.zip" --clobber
+            gh release upload "$TAG" files/* --clobber
           else
-            gh release create "$TAG" "dist/$PACKAGE.zip" --title "NBA Showtime Recomp $TAG" \
-              --target "$GITHUB_SHA" --notes-file packaging/release-notes.md "${flags[@]}"
+            flags=()
+            [ "${{ inputs.prerelease }}" = "true" ] && flags+=(--prerelease)
+            gh release create "$TAG" files/* --verify-tag --title "NBA Showtime Recomp $TAG" \
+              --notes-file packaging/release-notes.md "${flags[@]}"
           fi
