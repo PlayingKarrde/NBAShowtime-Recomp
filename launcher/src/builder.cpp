@@ -13,9 +13,9 @@
 
 extern "C" {
 extern const unsigned char nba_asset_entry_recipe[], nba_asset_entry_regs[], nba_asset_entry_nile[],
-    nba_asset_entry_sio[];
+    nba_asset_entry_sio[], nba_asset_diag_recipe[];
 extern const size_t nba_asset_entry_recipe_size, nba_asset_entry_regs_size, nba_asset_entry_nile_size,
-    nba_asset_entry_sio_size;
+    nba_asset_entry_sio_size, nba_asset_diag_recipe_size;
 }
 
 #if defined(_WIN32)
@@ -132,15 +132,14 @@ struct Disk {
 uint32_t le32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (uint32_t(p[3]) << 24); }
 uint64_t le64(const uint8_t* p) { return le32(p) | (uint64_t(le32(p + 4)) << 32); }
 
-// Replays assets/boot/entry_recipe.bin (see tools/recipe/make_recipe.py) against the user's ROM.
-bool rebuild_snapshot(const std::vector<uint8_t>& bios, const fs::path& chd_path, std::vector<uint8_t>& ram,
-                      std::string& err) {
-  const uint8_t* r = nba_asset_entry_recipe;
-  const size_t rn = nba_asset_entry_recipe_size;
-  if (rn < 24 || std::memcmp(r, "NBARCP1\0", 8) != 0) { err = "bad built-in snapshot recipe"; return false; }
+// Replays a recipe from assets/boot (see tools/recipe/make_recipe.py) against the user's ROM:
+// entry_recipe.bin gives the boot snapshot, diag_recipe.bin the operator menu program.
+bool replay_recipe(const uint8_t* r, size_t rn, const char* what, const std::vector<uint8_t>& bios,
+                   const fs::path& chd_path, std::vector<uint8_t>& ram, std::string& err) {
+  if (rn < 24 || std::memcmp(r, "NBARCP1\0", 8) != 0) { err = std::string("bad built-in ") + what + " recipe"; return false; }
   const uint32_t ram_size = le32(r + 8), crc = le32(r + 12), nsegs = le32(r + 16), nlit = le32(r + 20);
   const size_t seg_off = 24, lit_off = seg_off + size_t(nsegs) * 24;
-  if (lit_off + nlit != rn) { err = "bad built-in snapshot recipe"; return false; }
+  if (lit_off + nlit != rn) { err = std::string("bad built-in ") + what + " recipe"; return false; }
 
   Disk disk;
   FILE* f = open_file(chd_path, "rb");
@@ -177,11 +176,11 @@ bool rebuild_snapshot(const std::vector<uint8_t>& bios, const fs::path& chd_path
   }
   chd_close(disk.chd);
   std::fclose(f);
-  if (!ok) { err = "the snapshot recipe does not fit this ROM set"; return false; }
+  if (!ok) { err = std::string("the ") + what + " recipe does not fit this ROM set"; return false; }
   const uint32_t got = static_cast<uint32_t>(mz_crc32(MZ_CRC32_INIT, ram.data(), ram.size()));
   if (got != crc) {
-    char buf[128];
-    std::snprintf(buf, sizeof buf, "rebuilt boot snapshot has CRC %08x, expected %08x", got, crc);
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "rebuilt %s has CRC %08x, expected %08x", what, got, crc);
     err = buf;
     return false;
   }
@@ -237,18 +236,36 @@ bool run_build(const BuildOptions& opt, const Toolchain& tc, BuildState& st) {
   // 2) Boot snapshot (RAM at the game's entry point) + register state.
   st.set_step("Rebuilding the boot snapshot from the ROM", 0.15f);
   std::vector<uint8_t> ram;
-  if (!rebuild_snapshot(opt.roms.bios_data, data / "nbashowt.chd", ram, err)) return fail(err);
+  if (!replay_recipe(nba_asset_entry_recipe, nba_asset_entry_recipe_size, "boot snapshot", opt.roms.bios_data,
+                     data / "nbashowt.chd", ram, err))
+    return fail(err);
   if (!write_file(data / "entry_ram.bin", ram.data(), ram.size()) ||
       !write_file(data / "entry_regs.json", nba_asset_entry_regs, nba_asset_entry_regs_size) ||
       !write_file(data / "entry_nile.bin", nba_asset_entry_nile, nba_asset_entry_nile_size) ||
       !write_file(data / "entry_sio.bin", nba_asset_entry_sio, nba_asset_entry_sio_size))
     return fail("cannot write the boot files to " + u8(data));
   st.add_log("boot snapshot verified (8 MB)");
+  // The operator menu (test switch) is a second program on the disk, DIAG.EXE: rebuild its image
+  // (as the BIOS loads it at 0x80100000) for the recompiler. The game still works without it.
+  std::string diag_image;
+  {
+    std::vector<uint8_t> diag;
+    const fs::path p = work / "diag_80100000.bin";
+    if (!replay_recipe(nba_asset_diag_recipe, nba_asset_diag_recipe_size, "operator menu program", opt.roms.bios_data,
+                       data / "nbashowt.chd", diag, err))
+      st.add_log("warning: " + err + "; building without the operator menu");
+    else if (!write_file(p, diag.data(), diag.size()))
+      return fail("cannot write " + u8(p));
+    else {
+      diag_image = u8(p);
+      st.add_log("operator menu program (DIAG.EXE) verified");
+    }
+  }
 
   // 3) Recompile MIPS -> C.
   st.set_step("Recompiling the game to C", 0.18f);
   const fs::path gen = work / "generated";
-  if (!generate_vegas(u8(data / "entry_ram.bin"), u8(gen), [&](const std::string& l) { st.add_log(l); }))
+  if (!generate_vegas(u8(data / "entry_ram.bin"), u8(gen), [&](const std::string& l) { st.add_log(l); }, diag_image))
     return fail("recompilation failed");
   if (st.cancel) return fail("cancelled");
 

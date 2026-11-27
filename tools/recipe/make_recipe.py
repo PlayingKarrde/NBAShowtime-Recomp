@@ -7,6 +7,9 @@ Almost every non-zero byte of the snapshot is a straight copy of the BIOS ROM
 (destination, length, source, source offset) copies; only the few KB the BIOS computed at boot
 (pointers, tables, the clock) are stored as literal bytes. The launcher replays it.
 
+The same works for any image made of ROM / disk bytes: --ram work/game/diag_80100000.bin
+--out assets/boot/diag_recipe.bin gives the recipe for the operator menu program (DIAG.EXE).
+
 Format (little endian):
   "NBARCP1\\0"  u32 ram_size  u32 crc32(ram)  u32 nsegs  u32 literal_bytes
   nsegs x { u32 dst, u32 len, u32 src (1 = BIOS ROM, 2 = disk, 3 = literal), u32 pad, u64 src_off }

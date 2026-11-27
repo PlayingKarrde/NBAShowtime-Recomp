@@ -10,6 +10,8 @@ struct CodegenStats {
 };
 
 // Emits C sources for every function in `prog` into out_dir:
-//   funcs_NNN.c, recomp_funcs.h, func_table.c
+//   funcs_NNN.c, recomp_funcs.h, func_table.c (recomp_func_table)
+// or, for a named unit (another program, e.g. "diag"):
+//   diag_funcs_NNN.c, diag_funcs.h, diag_func_table.c (recomp_diag_func_table)
 CodegenStats generate_c(const Image& img, const Program& prog, const std::string& out_dir,
-                        size_t funcs_per_file = 120);
+                        const std::string& unit = "", size_t funcs_per_file = 120);

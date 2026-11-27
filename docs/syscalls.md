@@ -24,7 +24,7 @@ Confidence: **C** = confirmed from code or strings, **L** = likely (strong evide
 | 24 | lseek(fd, off, …) | 1 | ? | fd lookup + position update |
 | 2, 3, 9, 10, 18, 50 | other fd / path ops (create, stat, …) | 0–1 | ? | call open/close or fd lookup |
 | 5 | load executable | 0 | L | references `GAME.EXE` |
-| 45 | exec(file) with CRC check | 0 | C | "Can not open file", "Could not read CRC", "execute address" |
+| 45 | exec(file, ?, args) | 1 | C | loads and starts another program; see [exec](#exec-syscall-45) below |
 | 91 | install_disk_info(...) | 1 | C | string `install_disk_info()` |
 | 33–39 | disk request queue (read/write blocks) | 0–1 | L | 35/36/38/39 go through the request queue (`0x80014390`) |
 
@@ -75,7 +75,44 @@ The game also keeps records on its hard disk (about 240 sectors written per sess
 power-up count is restored from there at boot); the engine saves those in `disk.bin`.
 
 The test switch makes the game `exec("diag.exe")` (syscall 45): the operator menu is a separate
-program on the disk, not part of the recompiled `GAME.EXE`, so it does not run yet.
+program on the disk. It writes its adjustments through the same records (e.g. attract sound at
+NVRAM offset 0xE50), so they land in `nvram.bin`. See below.
+
+## exec (syscall 45)
+Handler `0x80016DC0`, `exec(const char* name, ?, const u32 args[4])`. Callers:
+- the game, on the test switch (`0x80114E88`, in a process): `exec("diag.exe", 0xDEADBEEF, args)`;
+- DIAG.EXE on EXIT (`0x80100B24`): `exec("BOOT.COM", 0, args)`, then, if that returned,
+  `exec("GAME.EXE", 0x800C0000, args)`.
+
+What it does:
+1. Copies `args` (16 bytes, or zeros when NULL) to `0x800E1FB8`: the block syscall 47 returns,
+   which crt0 passes to `main`. Upper-cases the name in place.
+2. Resets BIOS state for a new program: `0x8001407C`, `0x80006814`, `0x8000C330`, `0x8000C9D4`,
+   `0x8000D8B0`, `0x800061A0` (files, interrupt handlers, disk queue, …).
+3. Finds the file (`0x8000E198`, "Can not find file"), opens it (`0x8000DF68`), and reads:
+   - word 0: the file's CRC, to `0x800E1FC8` ("Could not read CRC");
+   - word 1: the load and entry address ("Can not read execute address");
+   - then seeks back to offset 4 and reads the rest of the file (size `0x800E1FA4` − 4) to the
+     load address ("Can not read all of file").
+4. CRC-32s those size − 4 bytes (`0x80017210`, POSIX `cksum` table at `0x8002AC48`; result at
+   `0x800E1FCC`) and compares it with word 0 ("CRC error detected").
+5. Moves the image down over the address word (`memmove(addr, addr + 4, size − 8)`), flushes the
+   caches (`0x8001B5BC`, `0x8001B6AC`), calls `0x8000A2B4`, and **`jalr` to the load address
+   (`0x80017060`)**. The stack is the caller's; the new crt0 clears its own BSS.
+6. If that returns or anything failed: "Failure in starting up" and a `teqi` trap.
+
+So an executable is `u32 crc, u32 address, image…`, loaded at `address` and entered there.
+DIAG.EXE: 523,228 bytes, CRC `0x8FEC5288`, address 0x80100000; its text ends at 0x801647A0, its image
+at 0x8017FBD4. On the disk it is one contiguous extent at byte 0x0CA46200 (partition 0 + 0x0CA44200).
+
+In the recomp, generated code replaces that `jalr` with `recomp_exec` (see
+[recompiler.md](recompiler.md#other-programs-exec)): it identifies the program by the CRC of its
+text in RAM and switches to that program's recompiled code. BOOT.COM (the disk's boot loader, which
+leads back to GAME.EXE through more programs) isn't recompiled; the engine warm-reboots into the
+boot snapshot instead.
+
+Syscall 5 (`0x800170A8`) is a similar loader for a program in the boot ROM (it copies 256 KB from
+`0xBFD00000`); nothing calls it.
 
 ## Sound (DCS2 board ports at 0xA4800000: data +0x10, status +0x14/+0x16)
 | # | name | calls | conf |

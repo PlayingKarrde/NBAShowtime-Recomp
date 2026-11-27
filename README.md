@@ -60,7 +60,7 @@ changed in the menu (Controls).
 | F2 | cycle aspect ratio: Auto (default), 4:3, 16:10, 16:9, 21:9, 32:9 |
 | - / = | volume down / up |
 | F9 | service credit |
-| F10 | test switch (the operator menu is a separate program that does not run yet) |
+| F10 | test switch: the operator menu (audits, adjustments, tests; move with the stick, select with a button) |
 
 ### Options
 ```

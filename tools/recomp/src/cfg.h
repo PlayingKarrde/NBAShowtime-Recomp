@@ -35,6 +35,12 @@ struct Program {
   uint32_t proc_resume = 0;           // scheduler address that sleep/exit jump back to
   // Per-instruction C replacements (game patches that need runtime values, e.g. widescreen).
   std::map<uint32_t, std::string> insn_override;
+  // BIOS exec (syscall 45) `jalr` into a program it just loaded: emitted as recomp_exec, which
+  // switches to that program's recompiled code (see runtime/src/proc.c).
+  std::set<uint32_t> exec_jalr;
+  // Emitted function names are <prefix>XXXXXXXX. Each program loaded at 0x80100000 has its own
+  // prefix, since their addresses overlap.
+  std::string prefix = "func_";
 };
 
 // Builds CFGs for all functions found by `analyze`, discovering extra functions in

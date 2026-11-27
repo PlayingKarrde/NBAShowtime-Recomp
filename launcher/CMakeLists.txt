@@ -20,15 +20,16 @@ target_include_directories(launcher_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOU
 target_link_libraries(launcher_imgui PUBLIC SDL3::SDL3)
 
 # Boot data that is not in the ROM: the snapshot recipe and the CPU / chip register state at the
-# game's entry point (assets/boot, see tools/recipe/make_recipe.py).
+# game's entry point, and the recipe for the operator menu program DIAG.EXE (assets/boot, see
+# tools/recipe/make_recipe.py).
 set(BOOT ${CMAKE_SOURCE_DIR}/assets/boot)
-set(EMBED_FILES "entry_recipe=${BOOT}/entry_recipe.bin|entry_regs=${BOOT}/entry_regs.json|entry_nile=${BOOT}/entry_nile.bin|entry_sio=${BOOT}/entry_sio.bin")
+set(EMBED_FILES "entry_recipe=${BOOT}/entry_recipe.bin|entry_regs=${BOOT}/entry_regs.json|entry_nile=${BOOT}/entry_nile.bin|entry_sio=${BOOT}/entry_sio.bin|diag_recipe=${BOOT}/diag_recipe.bin")
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/boot_assets.c
   COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/boot_assets.c "-DFILES=${EMBED_FILES}"
           -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
   DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake ${BOOT}/entry_recipe.bin ${BOOT}/entry_regs.json
-          ${BOOT}/entry_nile.bin ${BOOT}/entry_sio.bin
+          ${BOOT}/entry_nile.bin ${BOOT}/entry_sio.bin ${BOOT}/diag_recipe.bin
   VERBATIM)
 
 add_executable(nbalauncher src/main.cpp src/builder.cpp src/romset.cpp src/util.cpp

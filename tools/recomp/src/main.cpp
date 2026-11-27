@@ -5,8 +5,9 @@
 //                     [--text-end 0x801e5e50] [--out out/analysis]
 //   nbarecomp disasm  <image.bin> <addr> [count] [--base 0x80100000]
 //   nbarecomp generate <image.bin> [--out generated]   (emit C for every function)
-//   nbarecomp generate-vegas <entry_ram.bin> [--out generated]
-//       recompile BIOS + game from a full 8 MB RAM snapshot (base 0x80000000)
+//   nbarecomp generate-vegas <entry_ram.bin> [--diag diag_80100000.bin] [--out generated]
+//       recompile BIOS + game from a full 8 MB RAM snapshot (base 0x80000000), and the operator
+//       menu program (DIAG.EXE as loaded at 0x80100000; default work/game/diag_80100000.bin)
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -27,7 +28,7 @@ static int usage() {
                "  nbarecomp analyze <image.bin> [--base A] [--entry A] [--text-end A] [--out DIR]\n"
                "  nbarecomp disasm  <image.bin> <addr> [count] [--base A]\n"
                "  nbarecomp generate <image.bin> [--base A] [--entry A] [--text-end A] [--out DIR]\n"
-               "  nbarecomp generate-vegas <entry_ram.bin> [--out DIR]\n");
+               "  nbarecomp generate-vegas <entry_ram.bin> [--diag IMAGE] [--out DIR]\n");
   return 2;
 }
 
@@ -37,6 +38,7 @@ int main(int argc, char** argv) {
   const std::string path = argv[2];
   uint32_t base = 0x80100000, entry = 0x80100000, text_end = 0x801E5E50;  // banner strings (rodata) start here
   std::string out = "out/analysis";
+  std::string diag = "work/game/diag_80100000.bin";
   std::vector<std::string> pos;
   for (int k = 3; k < argc; ++k) {
     const std::string a = argv[k];
@@ -44,6 +46,7 @@ int main(int argc, char** argv) {
     else if (a == "--entry" && k + 1 < argc) entry = parse_u32(argv[++k]);
     else if (a == "--text-end" && k + 1 < argc) text_end = parse_u32(argv[++k]);
     else if (a == "--out" && k + 1 < argc) out = argv[++k];
+    else if (a == "--diag" && k + 1 < argc) diag = argv[++k];
     else pos.push_back(a);
   }
 
@@ -67,7 +70,10 @@ int main(int argc, char** argv) {
   if (cmd == "generate-vegas") {
     if (out == "out/analysis") out = "generated";
     // Full RAM snapshot taken at the game's entry point (tools/mame/run_dump.sh, or the launcher).
-    return generate_vegas(path, out) ? 0 : 1;
+    // DIAG.EXE: dumped by the engine with NBA_EXEC_DUMP (see docs/recompiler.md), or by the launcher.
+    if (FILE* f = std::fopen(diag.c_str(), "rb")) std::fclose(f);
+    else diag.clear();
+    return generate_vegas(path, out, {}, diag) ? 0 : 1;
   }
   if (cmd == "generate") {
     if (out == "out/analysis") out = "generated";

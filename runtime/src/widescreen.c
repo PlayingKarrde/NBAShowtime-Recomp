@@ -36,10 +36,19 @@ static void setf(int i, float v) { memcpy(ram_f(k_addr[i]), &v, 4); }
 
 /* Can be called again between frames (e.g. after a window resize): values are set from the
    originals each time, so repeated changes do not accumulate rounding. */
+static float cur = -1.0f;
+
+void widescreen_reset(void) { cur = -1.0f; }
+
 void widescreen_patch(float aspect) {
   static float orig[N_PATCH];
   static int saved;
-  static float cur = -1.0f;
+  /* the addresses are the game's: leave another program (the operator menu) alone */
+  if (recomp_program_count && recomp_program() != &recomp_programs[0]) {
+    cur = -1.0f;
+    recomp_ws_xmin = 0.0f;
+    return;
+  }
   if (!saved) {
     for (int i = 0; i < N_PATCH; ++i) memcpy(&orig[i], ram_f(k_addr[i]), 4);
     saved = 1;

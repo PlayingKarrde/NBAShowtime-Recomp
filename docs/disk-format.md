@@ -33,9 +33,11 @@ MAME shows a 640x480 display at 57 Hz.
 - File data seen on disk usually begins at +0x200 within a 4 KB-aligned extent.
 
 ## Executables found (partition 0, partition-relative offsets)
-Both start with `u32 checksum?`, `u32 load address = 0x80100000`, then raw MIPS code (crt0 clears BSS up to 0x807FC000).
-- **0x0CA44200**: main game. Contains "Phoenix Vegas", "Mother GOOSE - R5000", "NBA SHOWTIME",
-  "Diagnostics - Version", "Apr 21 1999", and Glide 3 (`@#%3.10.00.0126`, "fxPCI for DOS"). Code region is about 1.4 MB.
+Both start with `u32 CRC-32 of the rest`, `u32 load address = 0x80100000`, then raw MIPS code (crt0 clears BSS up to
+0x807FC000). This is the format the BIOS exec loads; see [syscalls.md](syscalls.md#exec-syscall-45).
+- **0x0CA44200**: **DIAG.EXE**, the operator menu (523,228 bytes, one contiguous extent; CRC `0x8FEC5288`).
+  Contains "Phoenix Vegas", "Mother GOOSE - R5000", "Diagnostics - Version", "Apr 21 1999", and Glide 3
+  (`@#%3.10.00.0126`, "fxPCI for DOS"). The launcher rebuilds it from `assets/boot/diag_recipe.bin`.
 - **0x004CD200**: second executable (about 1.15 MB). Contains "Voodoo2 InitCode $Revision: 52 $" and Glide env strings —
   possibly an older build or a utility.
 - Raw `start*4096` / contiguous reads do **not** reproduce clean file boundaries, so files are fragmented per the FAT.

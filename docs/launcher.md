@@ -37,9 +37,9 @@ On an outdated library the player sees:
 ### The interface (runtime/include/recomp.h)
 - **Library → engine:** `recomp_game_init(const RecompHostApi*)` is the library's only exported
   symbol (`runtime/module/game_module.c`). It returns `RecompGameExports`: both versions, the
-  function table, and pointers to the shared state.
-- **Engine → library:** `RecompHostApi` is a table of the 17 runtime hooks the generated code
-  calls: MMIO, indirect lookup, syscalls, COP0, FP exceptions, loop slices, process switches and
+  function table, the program list (game, operator menu) and pointers to the shared state.
+- **Engine → library:** `RecompHostApi` is a table of the 18 runtime hooks the generated code
+  calls: MMIO, indirect lookup, syscalls, COP0, FP exceptions, loop slices, process switches, exec and
   float conversions. It is listed once in `RECOMP_HOST_FUNCS`. Compiled with
   `RECOMP_GAME_MODULE`, the hook names become calls through the library's copy of the table.
 - **Shared state:** `recomp_rdram`, `recomp_budget` and `recomp_ws_xmin` live in the library,
@@ -85,10 +85,12 @@ gcc is slower hasn't been investigated yet.
    3.1 MB from the disk), plus 8.6 KB of bytes the BIOS and loader compute at boot (pointers,
    tables, the clock, the stack top). The launcher replays the recipe and checks the result's
    CRC32. The register state at entry (`entry_regs.json`, `entry_nile.bin`, `entry_sio.bin`) is
-   embedded in the launcher.
+   embedded in the launcher. The operator menu program (DIAG.EXE, run by the test switch) is
+   rebuilt the same way from `assets/boot/diag_recipe.bin` (48 bytes: one copy from the disk, plus
+   its CRC) into `.build/diag_80100000.bin`. If that fails the build goes on without the menu.
 4. **Recompile.** The same code path as `nbarecomp generate-vegas`
-   (`tools/recomp/src/vegas_gen.cpp`, linked into the launcher) writes the C into
-   `.build/generated/`.
+   (`tools/recomp/src/vegas_gen.cpp`, linked into the launcher) writes the C for the BIOS, the
+   game and DIAG.EXE into `.build/generated/` (see [recompiler.md](recompiler.md#other-programs-exec)).
 5. **Compile the game library.** The generated code and `game_module.c` are compiled with
    `zig cc -O2 -fPIC -fvisibility=hidden -DRECOMP_GAME_MODULE`, one job per CPU, and linked
    with `-shared`.
@@ -136,6 +138,10 @@ If the boot snapshot ever changes (a new MAME dump), regenerate the recipe:
 
     python3 tools/recipe/make_recipe.py      # reads work/dumps/entry_ram.bin, work/bios, work/nbashowt.img
     cp work/dumps/entry_{regs.json,nile.bin,sio.bin} assets/boot/
+
+The DIAG.EXE recipe comes from its image (see [recompiler.md](recompiler.md#other-programs-exec)):
+
+    python3 tools/recipe/make_recipe.py --ram work/game/diag_80100000.bin --out assets/boot/diag_recipe.bin
 
 ## Packaging a release
 Package from a clang build tree with tracing off:

@@ -5,5 +5,8 @@
 /* Call after the game image is in RAM. aspect = width / height of the rendered view (at least
    4:3). May be called again between frames to change it. */
 void widescreen_patch(float aspect);
+/* The game image was loaded again (exec): the next widescreen_patch patches it afresh. While
+   another program is loaded widescreen_patch does nothing. */
+void widescreen_reset(void);
 
 #endif

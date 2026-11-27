@@ -46,6 +46,19 @@ typedef struct RecompContext {
 typedef void (*RecompFunc)(RecompContext* ctx);
 typedef struct { uint32_t addr; RecompFunc fn; } RecompFuncEntry; /* sorted by addr */
 
+/* A program the BIOS can load at 0x80100000 and exec (syscall 45): the game, the operator menu
+   (DIAG.EXE). Their code addresses overlap, so each has its own function table, and indirect
+   calls at or above RECOMP_PROGRAM_BASE go to the program that is loaded (generated/programs.c;
+   the first entry is the game, whose table is the main one with the BIOS). */
+#define RECOMP_PROGRAM_BASE 0x80100000u
+typedef struct RecompProgram {
+  const char* name;
+  uint32_t text_start, text_end, text_crc; /* identifies it in RAM: CRC-32 of its code */
+  uint32_t proc_sleep;                     /* its process sleep routine (runtime/src/proc.c) */
+  const RecompFuncEntry* funcs;
+  unsigned func_count;
+} RecompProgram;
+
 /* FP exception kinds for recomp_fpe_arith (runtime/src/fpu.c). */
 enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_FPE_RSQRT = 3, RECOMP_FPE_RECIP = 4 };
 
@@ -55,6 +68,7 @@ enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_F
    - lookup: indirect calls/jumps; syscall/break/trap/cop0: privileged instructions
    - slice: loop budget ran out (RECOMP_LOOP); proc_switch_in/out: game process switching
      (runtime/src/proc.c), emitted at the scheduler's resume `jr ra` and the jumps back into it
+   - exec: the BIOS exec starting a program it just loaded (never returns)
    - fpe_arith/fpe_invalid: FP exceptions. Generated code checks results inline and calls these
      only for non-finite results / invalid conversions; a nonzero return means the BIOS FP
      exception handler supplied the result (the destination register must not be written)
@@ -74,6 +88,7 @@ enum { RECOMP_FPE_GENERIC = 0, RECOMP_FPE_DIV = 1, RECOMP_FPE_SQRT = 2, RECOMP_F
   X(void, recomp_slice, (RecompContext * ctx))                                                   \
   X(void, recomp_proc_switch_in, (RecompContext * ctx))                                          \
   X(void, recomp_proc_switch_out, (RecompContext * ctx, uint32_t from))                          \
+  X(void, recomp_exec, (RecompContext * ctx, uint32_t entry))                                    \
   X(int, recomp_fpe_arith,                                                                       \
     (RecompContext * ctx, uint32_t pc, int kind, double a, double b, double c, double r))        \
   X(int, recomp_fpe_invalid, (RecompContext * ctx, uint32_t pc))                                 \
@@ -97,6 +112,8 @@ typedef struct RecompGameExports {
   uint32_t codegen_revision; /* RECOMP_CODEGEN_REVISION the code was generated with */
   const RecompFuncEntry* func_table;
   unsigned func_count;
+  const RecompProgram* programs;
+  unsigned program_count;
   uint8_t** rdram;  /* the library's shared state (see below) */
   int32_t* budget;
   float* ws_xmin;
@@ -115,12 +132,16 @@ extern const RecompGameExports* recomp_game; /* set by the engine once the libra
 #define recomp_ws_xmin (*recomp_game->ws_xmin)
 #define recomp_func_table (recomp_game->func_table)
 #define recomp_func_count (recomp_game->func_count)
+#define recomp_programs (recomp_game->programs)
+#define recomp_program_count (recomp_game->program_count)
 #else
 extern uint8_t* recomp_rdram;
 extern int32_t recomp_budget;
 extern float recomp_ws_xmin;
 extern const RecompFuncEntry recomp_func_table[];
 extern const unsigned recomp_func_count;
+extern const RecompProgram recomp_programs[];
+extern const unsigned recomp_program_count;
 #endif
 
 #ifdef RECOMP_GAME_MODULE
@@ -137,6 +158,7 @@ extern RecompHostApi recomp_host;
 #define recomp_slice recomp_host.recomp_slice
 #define recomp_proc_switch_in recomp_host.recomp_proc_switch_in
 #define recomp_proc_switch_out recomp_host.recomp_proc_switch_out
+#define recomp_exec recomp_host.recomp_exec
 #define recomp_fpe_arith recomp_host.recomp_fpe_arith
 #define recomp_fpe_invalid recomp_host.recomp_fpe_invalid
 #define recomp_set_fcsr recomp_host.recomp_set_fcsr
@@ -156,6 +178,20 @@ void recomp_fpu_host_sync(void); /* re-apply the FPU mode after a host context s
 #define RECOMP_BIOS_SYSCALL_COUNT 104u
 #ifndef RECOMP_GAME_MODULE
 int recomp_bios_syscall(RecompContext* ctx, uint32_t code);
+
+/* The program whose code is in RAM at 0x80100000 (the game at boot). recomp_exec switches it. */
+const RecompProgram* recomp_program(void);
+void recomp_set_program(const RecompProgram* p);
+/* Which recompiled program is in RAM now (by code CRC), NULL if none. */
+const RecompProgram* recomp_identify_program(void);
+/* Start `entry` as a new program's main thread: forgets every process of the old program and
+   runs it on a fresh host fiber (runtime/src/proc.c). Never returns. */
+void recomp_proc_exec(RecompContext* ctx, uint32_t entry);
+/* Host hooks around exec (optional): `started` is called once a known program is loaded, before
+   it runs (e.g. to re-apply game patches); `unknown` when exec loads a program that wasn't
+   recompiled (e.g. DIAG.EXE leaving through BOOT.COM): it may reboot and not return. */
+extern void (*recomp_exec_started_hook)(RecompContext* ctx, const RecompProgram* p);
+extern void (*recomp_exec_unknown_hook)(RecompContext* ctx, uint32_t entry);
 #endif
 
 /* Loop back-edge accounting: every backward branch charges its body size (instructions) to a

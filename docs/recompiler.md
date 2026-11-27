@@ -38,7 +38,8 @@ Gamepads are players 1-4 in connection order:
 - The left stick is analog, using all 7 positions of the 49-way stick; the D-pad works too.
 - South = A, East = B, West or any shoulder/trigger = Turbo, Start = Start, Back = Coin.
 
-F9 adds a service credit, F10 is the test switch, and - / = change the volume.
+F9 adds a service credit, F10 is the test switch (the operator menu, see
+[Other programs](#other-programs-exec)), and - / = change the volume.
 `NBA_PRESS=port:mask:from:to[,...]` scripts presses for tests (see `src/host/input.c`).
 If the game stops swapping buffers for 10 s of game time, it prints a stall report: disk and sound
 counters, recent guest functions and a host stack trace. `NBA_STALL_EXIT=1` quits after the report. With `--dump DIR --dump-start N --dump-every N --frames N --hidden --unthrottled` it
@@ -143,6 +144,55 @@ In total that's 2,553 functions. Syscalls go through `recomp_bios_syscall()`, wh
 from the table in guest RAM (0x8002B3C8) and calls the recompiled function. The BIOS's assembly
 exception/interrupt entry (k0/k1, eret) is not used; the runtime will deliver interrupts natively.
 
+## Other programs (exec)
+The BIOS can replace the game with another program: exec (syscall 45, see
+[syscalls.md](syscalls.md#exec-syscall-45)) loads a file from the disk at 0x80100000 and jumps to
+it. The test switch uses it to start the operator menu, **DIAG.EXE**, which is recompiled too:
+
+```bash
+./build/tools/recomp/nbarecomp generate-vegas work/dumps/entry_ram.bin --diag work/game/diag_80100000.bin
+```
+(`--diag` defaults to that path; without the file the game is built alone.) It writes a second unit
+next to the first: `diag_funcs_NNN.c`, `diag_funcs.h` and `diag_func_table.c`, with functions named
+`diag_XXXXXXXX` (`Program::prefix`), since its addresses overlap the game's. DIAG.EXE:
+0x80100000–0x801647A0 text, data to 0x8017FBD4; 1,150 functions, 35 jump tables, 1 unresolved `jr`.
+`generated/programs.c` lists the programs (`RecompProgram`: name, text range, CRC-32 of the
+text, process sleep routine, function table) and the game library exports it.
+
+At run time:
+- The BIOS exec's `jalr` into the loaded program (`0x80017060`, `Program::exec_jalr`) is emitted
+  as `recomp_exec(ctx, entry)`. That identifies the program in RAM by its text CRC, makes it the
+  current program, and starts its entry on a fresh host fiber (`recomp_proc_exec`): the old
+  program's processes are dropped (its memory was just overwritten), and exec never nests host
+  stacks however often the menu is entered.
+- `recomp_lookup` resolves addresses at or above 0x80100000 in the current program's table; the
+  BIOS stays in the main table. The BIOS calls the program's interrupt and callback pointers
+  through it, so they reach the right code.
+- Each program has its own copy of the process scheduler (DIAG.EXE: resume `jr ra` at
+  0x80132278, back-jumps to 0x8013227C, sleep 0x80131AB0). The generator emits the switches per
+  program and `proc.c` checks the current program's sleep routine.
+- The engine (`src/host/main.c`) only applies the widescreen patches while the game is loaded,
+  re-applies them to a freshly loaded game, and shows other programs at 4:3.
+- **Leaving the menu**: EXIT does `exec("BOOT.COM")`, the disk's boot loader, which would load
+  GAME.EXE through more programs. Those aren't recompiled, so for a program it doesn't know
+  `recomp_exec` calls the engine's `reboot_to_game`: a warm reboot into the boot snapshot (RAM
+  and CPU registers from `entry_ram.bin` / `entry_regs.json`), with the BIOS's CMOS copy filled
+  from the NVRAM, where the menu wrote its adjustments. The game then boots normally ("CMOS: OK").
+  The disk overlay and the hardware models keep running; the game resets the sound board and
+  video as it starts.
+
+Getting the image: run the engine with `NBA_EXEC_DUMP=DIR` and press the test switch (F10, or
+`NBA_PRESS=0:10:600:640`). Every exec saves the loaded image as `DIR/exec_<address>_<file CRC>.bin`;
+DIAG.EXE's is `exec_80100000_8FEC5288.bin`. Copy it to `work/game/diag_80100000.bin`. (A recomp that
+doesn't know DIAG.EXE yet stops right after the dump with "program not recompiled".) The launcher
+rebuilds the same image from the disk with `assets/boot/diag_recipe.bin`:
+
+    python3 tools/recipe/make_recipe.py --ram work/game/diag_80100000.bin --out assets/boot/diag_recipe.bin
+
+Testing the menu headless: `NBA_PRESS` port 3 is the player 1 stick (mask 1 up, 2 down, 4 left,
+8 right), port 1 mask 10 button A. From boot: `0:10:600:640` opens the menu (it is ready about
+frame 1000), and each stick or button press needs about 60 frames.
+
 ## Smoke test (tests/smoke/smoke.c)
 ```bash
 ./build/smoke work/dumps/entry_ram.bin work/dumps/entry_regs.json work/nbashowt.img 300 --quiet
@@ -165,6 +215,8 @@ controller and UART). See [hardware.md](hardware.md).
   never terminates for a NaN argument, and the BIOS watchdog fired about 90 s in.
 
 ## Game processes (runtime/src/proc.c)
+(The operator menu has the same scheduler at other addresses; see [Other programs](#other-programs-exec).)
+
 The game's scheduler (main loop `0x801B4270`) resumes a process by restoring its registers, swapping
 `sp` with `k1` and doing `jr ra` into it (`0x801B4760`). Processes give control back from sleep
 (`0x801B3F98`, 407 call sites) or exit (`0x801B4088`) by swapping stacks and jumping into the middle of

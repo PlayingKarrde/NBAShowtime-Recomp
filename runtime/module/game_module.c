@@ -30,6 +30,8 @@ RECOMP_EXPORT const RecompGameExports* recomp_game_init(const RecompHostApi* hos
     recomp_host = *host;
     ex.func_table = recomp_func_table;
     ex.func_count = recomp_func_count;
+    ex.programs = recomp_programs;
+    ex.program_count = recomp_program_count;
     ex.rdram = &recomp_rdram;
     ex.budget = &recomp_budget;
     ex.ws_xmin = &recomp_ws_xmin;

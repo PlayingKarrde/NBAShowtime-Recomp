@@ -101,7 +101,9 @@ static void wanted_view(float* aspect, float* scale) {
   SDL_GetWindowSizeInPixels(H.window, &ww, &wh);
   if (ww < 1) ww = 1;
   if (wh < 1) wh = 1;
-  const float a = clamp_aspect(g_settings.aspect > 0 ? g_settings.aspect : (float)ww / wh);
+  /* Widescreen is the game's (its patches, widescreen.c); the operator menu shows at 4:3. */
+  const int in_game = !recomp_program_count || recomp_program() == &recomp_programs[0];
+  const float a = in_game ? clamp_aspect(g_settings.aspect > 0 ? g_settings.aspect : (float)ww / wh) : 4.0f / 3.0f;
   *aspect = a;
   /* render at the displayed size: the window height, or less when bars go above and below */
   const float shown_h = ww < wh * a ? ww / a : (float)wh;
@@ -514,7 +516,7 @@ static int json_u64(const char* json, const char* key, uint64_t* out) {
 }
 
 static int load_entry(RecompContext* ctx, const char* ram_path, const char* regs_path) {
-  recomp_rdram = calloc(1, RECOMP_RAM_SIZE);
+  if (!recomp_rdram) recomp_rdram = calloc(1, RECOMP_RAM_SIZE);
   FILE* f = fopen(ram_path, "rb");
   if (!f || fread(recomp_rdram, 1, RECOMP_RAM_SIZE, f) != RECOMP_RAM_SIZE) {
     fprintf(stderr, "cannot read RAM snapshot %s (dump it with tools/mame/run_dump.sh)\n", ram_path);
@@ -562,6 +564,42 @@ static void sync_cmos_shadow(int loaded) {
     memcpy(nv + CMOS_FROM, recomp_rdram + CMOS_SHADOW + CMOS_FROM, CMOS_TO - CMOS_FROM);
     nvram_touch();
   }
+}
+
+/* Cabinet DIP switches (free play, 2 or 4 players): the game reads them as it starts. */
+static void apply_dip_switches(void) {
+  g_settings_at_boot = g_settings;
+  ioasic_set_input(IOASIC_IN_DIP, getenv("NBA_DIP") ? (uint16_t)strtoul(getenv("NBA_DIP"), NULL, 16) /* tests */
+                                                     : settings_dip_switches(&g_settings));
+}
+
+/* ---- exec: the operator menu and back ---- */
+static struct { const char *ram, *regs; } g_boot;
+
+static void on_exec_started(RecompContext* ctx, const RecompProgram* p) {
+  (void)ctx;
+  fprintf(stderr, "exec: %s\n", p == &recomp_programs[0] ? "back to the game" : p->name);
+  if (p == &recomp_programs[0]) { /* a fresh game image: patch it again */
+    widescreen_reset();
+    widescreen_patch(H.aspect);
+  }
+}
+
+/* The operator menu (DIAG.EXE) leaves by exec("BOOT.COM"), the disk's boot loader, which goes on
+   to load GAME.EXE through more programs that aren't recompiled. Start the game the way the boot
+   snapshot does instead: a warm reboot into the RAM and CPU state at the game's entry point, with
+   the BIOS's CMOS copy taken from the NVRAM (where the menu saved its adjustments). The disk
+   overlay, sound board and video keep running; the game resets them as it starts. */
+static void reboot_to_game(RecompContext* ctx, uint32_t entry) {
+  (void)entry;
+  fprintf(stderr, "exec: rebooting into the game\n");
+  save_game_data();
+  if (load_entry(ctx, g_boot.ram, g_boot.regs) != 0) quit(1);
+  sync_cmos_shadow(1);
+  apply_dip_switches(); /* a restart: DIP changes from the settings menu take effect now */
+  recomp_set_program(&recomp_programs[0]);
+  on_exec_started(ctx, &recomp_programs[0]);
+  recomp_proc_exec(ctx, RECOMP_PROGRAM_BASE);
 }
 
 static int file_exists(const char* path) {
@@ -675,13 +713,14 @@ int main(int argc, char** argv) {
     snprintf(nile, sizeof nile, "%sentry_nile.bin", dir);
     snprintf(sio, sizeof sio, "%sentry_sio.bin", dir);
     if (vegas_init(disk, nile, sio, sound) != 0) { fprintf(stderr, "cannot open disk image %s\n", disk); return 1; }
+    g_boot.ram = ram, g_boot.regs = regs;
   }
   if (load_entry(&ctx, ram, regs) != 0) return 1;
-  /* cabinet DIP switches (free play, 2 or 4 players): the game reads them as it starts */
-  g_settings_at_boot = g_settings;
-  ioasic_set_input(IOASIC_IN_DIP, getenv("NBA_DIP") ? (uint16_t)strtoul(getenv("NBA_DIP"), NULL, 16) /* tests */
-                                                     : settings_dip_switches(&g_settings));
-  if (!no_save) {
+  apply_dip_switches();
+  recomp_exec_started_hook = on_exec_started;
+  recomp_exec_unknown_hook = reboot_to_game;
+  if (no_save) sync_cmos_shadow(0); /* the NVRAM starts as the snapshot's CMOS copy */
+  else {
     static char nv_path[1300];
     char dir[1200];
     if (save_dir) {

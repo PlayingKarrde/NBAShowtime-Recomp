@@ -1,4 +1,4 @@
-// Core runtime pieces shared by every host build: indirect call lookup and
+// Core runtime pieces shared by every host build: indirect call lookup (per loaded program) and
 // float -> integer conversions with defined behaviour.
 #include <math.h>
 #include <stdint.h>
@@ -22,14 +22,51 @@ static void missing_function(RecompContext* ctx) {
   recomp_unhandled(ctx, (uint32_t)ctx->r[31], "indirect call to unknown address");
 }
 
-RecompFunc recomp_lookup(RecompContext* ctx, uint32_t vaddr) {
-  unsigned lo = 0, hi = recomp_func_count;
+static const RecompProgram* cur_program; /* NULL = the game (recomp_programs[0]) */
+
+const RecompProgram* recomp_program(void) {
+  return cur_program ? cur_program : (recomp_program_count ? &recomp_programs[0] : NULL);
+}
+void recomp_set_program(const RecompProgram* p) { cur_program = p; }
+
+static uint32_t crc32_ram(uint32_t start, uint32_t end) {
+  static uint32_t table[256];
+  if (!table[1])
+    for (uint32_t i = 0; i < 256; ++i) {
+      uint32_t c = i;
+      for (int k = 0; k < 8; ++k) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+      table[i] = c;
+    }
+  uint32_t c = 0xFFFFFFFFu;
+  for (uint32_t a = recomp_phys(start); a < recomp_phys(end) && a < RECOMP_RAM_SIZE; ++a)
+    c = table[(c ^ recomp_rdram[a]) & 0xFF] ^ (c >> 8);
+  return ~c;
+}
+
+const RecompProgram* recomp_identify_program(void) {
+  for (unsigned i = 0; i < recomp_program_count; ++i) {
+    const RecompProgram* p = &recomp_programs[i];
+    if (crc32_ram(p->text_start, p->text_end) == p->text_crc) return p;
+  }
+  return NULL;
+}
+
+static RecompFunc find(const RecompFuncEntry* t, unsigned n, uint32_t vaddr) {
+  unsigned lo = 0, hi = n;
   while (lo < hi) {
     unsigned mid = (lo + hi) / 2;
-    if (recomp_func_table[mid].addr < vaddr) lo = mid + 1;
+    if (t[mid].addr < vaddr) lo = mid + 1;
     else hi = mid;
   }
-  if (lo < recomp_func_count && recomp_func_table[lo].addr == vaddr) return recomp_func_table[lo].fn;
+  return lo < n && t[lo].addr == vaddr ? t[lo].fn : NULL;
+}
+
+RecompFunc recomp_lookup(RecompContext* ctx, uint32_t vaddr) {
+  /* The BIOS is in the main table; program addresses go to the program that is loaded. */
+  RecompFunc fn = cur_program && vaddr >= RECOMP_PROGRAM_BASE
+                      ? find(cur_program->funcs, cur_program->func_count, vaddr)
+                      : find(recomp_func_table, recomp_func_count, vaddr);
+  if (fn) return fn;
   recomp_unhandled(ctx, vaddr, "recomp_lookup: no function at address");
   return missing_function;
 }
