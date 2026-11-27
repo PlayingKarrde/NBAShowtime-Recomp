@@ -465,14 +465,34 @@ static void gl_swap(void* user, uint32_t display_addr) {
   G.frame++;
 }
 
+/* The render targets are created lazily at the current size (see target), so a new size only
+   needs the old ones dropped: the game redraws every buffer before showing it again. */
+int renderer_gl_set_view(float scale, float aspect) {
+  if (scale < 1.0f) scale = 1.0f;
+  if (aspect < 4.0f / 3.0f) aspect = 4.0f / 3.0f;
+  const float xmin = 256.0f - 192.0f * aspect, xmax = 256.0f + 192.0f * aspect;
+  const int w = (int)lroundf((xmax - xmin) * scale), h = (int)lroundf(384 * scale);
+  if (scale == G.scale && xmin == G.xmin && xmax == G.xmax && w == G.width && h == G.height) return 0;
+  flush();
+  G.scale = scale;
+  G.xmin = xmin;
+  G.xmax = xmax;
+  if (w != G.width || h != G.height) {
+    for (int i = 0; i < MAX_TARGETS; ++i) {
+      if (G.col[i].tex) glDeleteTextures(1, &G.col[i].tex);
+      if (G.aux[i].tex) glDeleteTextures(1, &G.aux[i].tex);
+    }
+    memset(G.col, 0, sizeof G.col);
+    memset(G.aux, 0, sizeof G.aux);
+    G.width = w;
+    G.height = h;
+  }
+  return 1;
+}
+
 int renderer_gl_init(float scale, float aspect, RendererGlFrameFn fn, void* user) {
   memset(&G, 0, sizeof G);
-  G.scale = scale;
-  if (aspect < 4.0f / 3.0f) aspect = 4.0f / 3.0f;
-  G.xmin = 256.0f - 192.0f * aspect;
-  G.xmax = 256.0f + 192.0f * aspect;
-  G.width = (int)lroundf((G.xmax - G.xmin) * scale);
-  G.height = (int)lroundf(384 * scale);
+  renderer_gl_set_view(scale, aspect);
   G.on_frame = fn;
   G.on_frame_user = user;
   GLuint vs = compile(GL_VERTEX_SHADER, kVS), fs = compile(GL_FRAGMENT_SHADER, kFS);

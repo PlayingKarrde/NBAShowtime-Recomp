@@ -10,7 +10,7 @@ The recompiled game is a separate library (`nbagame.so`, built next to the execu
 from the repository root after dumping the entry state (a launcher build instead finds
 everything in `data/` next to the executable, and reads the disk from `nbashowt.chd`):
 
-    ./build/nbashowtime [--game nbagame.so] [--aspect 16:9] [--scale S] [--window WxH] [--fullscreen] [--stretch] [--no-sound]
+    ./build/nbashowtime [--game nbagame.so] [--aspect auto|16:9] [--scale S] [--window WxH] [--fullscreen] [--no-sound]
                         [--volume PERCENT] [--vsync] [--perf]
 
 Timing comes from the arcade's 57 Hz vblank alone. `--vsync` also makes each swap wait for the
@@ -25,7 +25,8 @@ RMS around -40 dBFS before the gain). `--perf` prints once per 60 frames:
 - sound-board traffic and audio level;
 - where game time went (instructions, Count reads, IDE, Banshee, I/O ASIC).
 
-Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 toggles 4:3 / stretched.
+Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 cycles the aspect ratio (Auto, 4:3, 16:10, 16:9, 21:9, 32:9; the
+window title shows the current one).
 
 | | Player 1 | Player 2 | Players 3/4 |
 |---|---|---|---|
@@ -47,13 +48,17 @@ it runs about twice as fast as real time at 1280x960. In gameplay it needs about
 time per second of game on average, and 860 ms in the worst second.
 
 ## Widescreen
-`--aspect 16:9` (or 21:9, any ratio) uses "Hor+" widescreen. The game keeps its focal length, and
+By default (`--aspect auto`) the render aspect ratio follows the window's, clamped to 4:3..32:9,
+and changes live when the window is resized or goes fullscreen; the render scale follows the window
+too unless `--scale` is given. `--aspect 16:9` (or 21:9, any ratio) fixes it, with black bars when
+the window differs. Either way it is "Hor+" widescreen. The game keeps its focal length, and
 the renderer shows game X from 256 - 192*aspect to 256 + 192*aspect, so the 3D view widens. The 2D
 HUD stays centred at its original proportions, and full-screen 2D menus are pillarboxed.
 
 The game normally drops anything outside its 512x384 screen, at two levels:
 - **Object bounding boxes** (801A0D18, 801A1008/801A1114) are tested against the screen. Their
-  centre and right-edge constants are data and are shifted at boot (`runtime/src/widescreen.c`).
+  centre and right-edge constants are data and are shifted at boot, and again whenever the aspect ratio changes
+  (`runtime/src/widescreen.c`).
 - **The per-triangle clipper** (801A2C48) rejects, trivially accepts and clips against x = 0 and
   x = 512. Its 512s are data and patched at boot. Its 0s are instructions, which the recompiler
   replaces through `Program::insn_override` (in `tools/recomp/src/main.cpp`) with code that reads

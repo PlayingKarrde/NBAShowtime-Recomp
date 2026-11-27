@@ -25,34 +25,38 @@
 float recomp_ws_xmin;
 #endif
 
-static void mulf(uint32_t vaddr, float k) {
-  uint8_t* p = recomp_rdram + (vaddr & 0x1FFFFFFFu);
-  float f;
-  memcpy(&f, p, 4);
-  f *= k;
-  memcpy(p, &f, 4);
-}
+/* The patched values, as the game image has them (saved on the first call). */
+static const uint32_t k_addr[] = {0x801FA5D4u, 0x801FA5E0u, 0x801FA5E8u, 0x801FA5F4u,
+                                  0x801FA648u, 0x801FA64Cu, 0x801FA65Cu, 0x801F2458u};
+enum { N_PATCH = sizeof k_addr / sizeof k_addr[0] };
 
-static void addf(uint32_t vaddr, float delta) {
-  uint8_t* p = recomp_rdram + (vaddr & 0x1FFFFFFFu);
-  float f;
-  memcpy(&f, p, 4);
-  f += delta;
-  memcpy(p, &f, 4);
-}
+static float* ram_f(uint32_t vaddr) { return (float*)(recomp_rdram + (vaddr & 0x1FFFFFFFu)); }
 
+static void setf(int i, float v) { memcpy(ram_f(k_addr[i]), &v, 4); }
+
+/* Can be called again between frames (e.g. after a window resize): values are set from the
+   originals each time, so repeated changes do not accumulate rounding. */
 void widescreen_patch(float aspect) {
-  if (aspect <= 4.0f / 3.0f + 1e-4f) return;
-  const float d = 192.0f * aspect - 256.0f; /* extra game X units on each side */
-  addf(0x801FA5D4u, d);        /* bbox test centre X */
-  addf(0x801FA5E0u, 2.0f * d); /* bbox test max X */
-  addf(0x801FA5E8u, d);        /* second bbox test centre X */
-  addf(0x801FA5F4u, 2.0f * d); /* second bbox test max X */
+  static float orig[N_PATCH];
+  static int saved;
+  static float cur = -1.0f;
+  if (!saved) {
+    for (int i = 0; i < N_PATCH; ++i) memcpy(&orig[i], ram_f(k_addr[i]), 4);
+    saved = 1;
+  }
+  if (aspect < 4.0f / 3.0f + 1e-4f) aspect = 4.0f / 3.0f;
+  if (aspect == cur) return;
+  cur = aspect;
+  const float d = aspect == 4.0f / 3.0f ? 0.0f : 192.0f * aspect - 256.0f; /* extra game X units on each side */
+  setf(0, orig[0] + d);        /* bbox test centre X */
+  setf(1, orig[1] + 2.0f * d); /* bbox test max X */
+  setf(2, orig[2] + d);        /* second bbox test centre X */
+  setf(3, orig[3] + 2.0f * d); /* second bbox test max X */
   /* 3D polygon clipper 801A2C48 (unshifted screen coordinates): accept/clip x in [-d, 512 + d].
      The left edge is read by patched instructions (tools/recomp main.cpp: insn_override). */
   recomp_ws_xmin = -d;
-  addf(0x801FA648u, d); /* all vertices x >= 512: reject */
-  addf(0x801FA64Cu, d); /* trivial accept x < 512 */
-  addf(0x801FA65Cu, d); /* right clip edge */
-  mulf(0x801F2458u, aspect * 0.75f); /* player visibility: horizontal view-space margin */
+  setf(4, orig[4] + d); /* all vertices x >= 512: reject */
+  setf(5, orig[5] + d); /* trivial accept x < 512 */
+  setf(6, orig[6] + d); /* right clip edge */
+  setf(7, orig[7] * (d == 0.0f ? 1.0f : aspect * 0.75f)); /* player visibility: horizontal view-space margin */
 }

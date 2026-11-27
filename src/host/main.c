@@ -9,11 +9,11 @@
 //   --game FILE    game library built by the launcher (default nbagame.so/.dll/.dylib next to the executable)
 //   The data/ defaults are next to the executable, where the launcher puts them; the work/ ones
 //   are the developer tree (run from the repository root).
-//   --scale S      render scale (x 512x384); default: fit the window height
+//   --scale S      render scale (x 512x384); default: follow the window size
 //   --window WxH   initial window size           (default 1280x960)
 //   --fullscreen   desktop fullscreen
-//   --aspect A     render aspect ratio, e.g. 16:9 or 21:9 (default 4:3): widescreen
-//   --stretch      fill the window (ignore the aspect ratio)
+//   --aspect A     render aspect ratio: auto (default: match the window, Hor+ widescreen up to
+//                  32:9), or a fixed ratio such as 4:3, 16:9 or 21:9 (black bars around)
 //   --vsync        present frames on the display's refresh (no tearing; best on 120 Hz+ displays,
 //                  on a 60 Hz display a frame can wait almost a whole refresh)
 //   --volume P     sound volume in percent (default 300; the board's output is quiet)
@@ -49,9 +49,11 @@ static struct {
   SDL_Window* window;
   SDL_GLContext gl;
   SDL_AudioStream* audio;
-  int stretch, throttle, verbose, perf;
+  int throttle, verbose, perf;
   int vsync;     /* present on the display's refresh (time-based pacing still sets the speed) */
-  float aspect; /* render aspect ratio */
+  float aspect_mode; /* requested aspect ratio; 0 = auto (match the window) */
+  float aspect;      /* render aspect ratio in use */
+  float fixed_scale; /* --scale; 0 = follow the window */
   uint64_t frame; /* buffer swaps so far */
   const char* dump_dir;
   uint64_t dump_every, dump_start, max_frames;
@@ -59,6 +61,70 @@ static struct {
   double virt_base;
   uint8_t* readback;
 } H;
+
+/* ---- aspect ratio ---- */
+#define ASPECT_MIN (4.0f / 3.0f)
+#define ASPECT_MAX (32.0f / 9.0f)
+static const struct { float aspect; const char* name; } k_aspects[] = {
+    {0.0f, "Auto"}, {4.0f / 3.0f, "4:3"}, {16.0f / 10.0f, "16:10"}, {16.0f / 9.0f, "16:9"}, {21.0f / 9.0f, "21:9"}, {32.0f / 9.0f, "32:9"},
+};
+enum { N_ASPECTS = sizeof k_aspects / sizeof k_aspects[0] };
+
+static float clamp_aspect(float a) { return a < ASPECT_MIN ? ASPECT_MIN : a > ASPECT_MAX ? ASPECT_MAX : a; }
+
+static void aspect_name(float a, char* out, size_t n) {
+  for (int i = 1; i < N_ASPECTS; ++i)
+    if (fabsf(a - k_aspects[i].aspect) < 0.01f) { snprintf(out, n, "%s", k_aspects[i].name); return; }
+  snprintf(out, n, "%.2f:1", a);
+}
+
+/* The render aspect ratio and scale wanted for the window's current size. */
+static void wanted_view(float* aspect, float* scale) {
+  int ww, wh;
+  SDL_GetWindowSizeInPixels(H.window, &ww, &wh);
+  if (ww < 1) ww = 1;
+  if (wh < 1) wh = 1;
+  const float a = clamp_aspect(H.aspect_mode > 0 ? H.aspect_mode : (float)ww / wh);
+  *aspect = a;
+  /* render at the displayed size: the window height, or less when bars go above and below */
+  const float shown_h = ww < wh * a ? ww / a : (float)wh;
+  *scale = H.fixed_scale > 0 ? H.fixed_scale : (shown_h / 384.0f < 1.0f ? 1.0f : shown_h / 384.0f);
+}
+
+static void update_title(float aspect) {
+  char cur[32], title[96];
+  aspect_name(aspect, cur, sizeof cur);
+  if (H.aspect_mode > 0) snprintf(title, sizeof title, "NBA Showtime  [%s, F2 to change]", cur);
+  else snprintf(title, sizeof title, "NBA Showtime  [Auto: %s, F2 to change]", cur);
+  SDL_SetWindowTitle(H.window, title);
+}
+
+/* Follow the window (auto aspect, render scale) and the F2 choice; between frames only. */
+static void apply_view(void) {
+  float a, sc;
+  wanted_view(&a, &sc);
+  const int aspect_changed = a != H.aspect;
+  if (renderer_gl_set_view(sc, a) || aspect_changed) {
+    H.aspect = a;
+    widescreen_patch(a);
+    free(H.readback); /* --dump: the frame size changed */
+    H.readback = NULL;
+    if (aspect_changed) update_title(a);
+  }
+}
+
+static void cycle_aspect(void) {
+  int cur = 0;
+  for (int i = 0; i < N_ASPECTS; ++i)
+    if (H.aspect_mode == k_aspects[i].aspect) cur = i;
+  H.aspect_mode = k_aspects[(cur + 1) % N_ASPECTS].aspect;
+  float a, sc;
+  wanted_view(&a, &sc);
+  update_title(a); /* the view itself follows at the next frame (apply_view) */
+  char name[32];
+  aspect_name(a, name, sizeof name);
+  fprintf(stderr, "aspect ratio: %s%s%s\n", H.aspect_mode > 0 ? "" : "Auto (", name, H.aspect_mode > 0 ? "" : ")");
+}
 
 /* ---- runtime hooks ---- */
 static void quiet_log(const char* fmt, ...) {
@@ -138,7 +204,7 @@ static void handle_events(void) {
         const int fs = (SDL_GetWindowFlags(H.window) & SDL_WINDOW_FULLSCREEN) != 0;
         SDL_SetWindowFullscreen(H.window, !fs);
       }
-      if (e.key.key == SDLK_F2) H.stretch = !H.stretch;
+      if (e.key.key == SDLK_F2) cycle_aspect();
     }
   }
 }
@@ -178,9 +244,12 @@ static void on_frame(void* user, uint64_t frame) {
   int ww, wh;
   SDL_GetWindowSizeInPixels(H.window, &ww, &wh);
   int dw = ww, dh = wh, dx = 0, dy = 0;
-  if (!H.stretch) { /* keep the render aspect ratio, black bars around */
-    if (ww > wh * H.aspect) { dw = (int)(wh * H.aspect); dx = (ww - dw) / 2; }
-    else { dh = (int)(ww / H.aspect); dy = (wh - dh) / 2; }
+  { /* keep the render aspect ratio, black bars around if the window's differs */
+    int rw, rh;
+    renderer_gl_size(&rw, &rh);
+    const float ra = (float)rw / rh;
+    if (ww > wh * ra) { dw = (int)lroundf(wh * ra); dx = (ww - dw) / 2; }
+    else { dh = (int)lroundf(ww / ra); dy = (wh - dh) / 2; }
   }
   renderer_gl_present(ww, wh, dx, dy, dw, dh);
   SDL_GL_SwapWindow(H.window);
@@ -206,6 +275,7 @@ static void on_frame(void* user, uint64_t frame) {
     quit(0);
   }
   H.frame = frame + 1;
+  apply_view(); /* the next frame renders at the window's current aspect ratio / size */
   if (H.perf) { /* frame pacing: wall time between presented frames */
     static uint64_t prev;
     static double worst;
@@ -362,11 +432,9 @@ int main(int argc, char** argv) {
     }
   }
   const char* game_lib = NULL;
-  float scale = 0;
   int win_w = 1280, win_h = 960, fullscreen = 0, hidden = 0, no_sound = 0;
   float volume = 3.0f;
   H.throttle = 1;
-  H.aspect = 4.0f / 3.0f;
   H.dump_every = 60;
   for (int i = 1; i < argc; ++i) {
     const char* a = argv[i];
@@ -377,12 +445,14 @@ int main(int argc, char** argv) {
     else if (ARG("--disk")) disk = next;
     else if (ARG("--sound")) sound = next;
     else if (ARG("--game")) game_lib = next;
-    else if (ARG("--scale")) scale = (float)atof(next);
+    else if (ARG("--scale")) H.fixed_scale = (float)atof(next);
     else if (ARG("--window")) sscanf(next, "%dx%d", &win_w, &win_h);
     else if (ARG("--aspect")) {
       float a = 0, b = 0;
-      if (sscanf(next, "%f:%f", &a, &b) == 2 && b > 0) H.aspect = a / b;
-      else H.aspect = (float)atof(next);
+      if (!SDL_strcasecmp(next, "auto")) H.aspect_mode = 0;
+      else if (sscanf(next, "%f:%f", &a, &b) == 2 && b > 0) H.aspect_mode = clamp_aspect(a / b);
+      else if (atof(next) > 0) H.aspect_mode = clamp_aspect((float)atof(next));
+      else { fprintf(stderr, "--aspect: expected auto, W:H or a number, got %s\n", next); return 2; }
     }
     else if (ARG("--dump")) H.dump_dir = next;
     else if (ARG("--volume")) volume = (float)atof(next) / 100.0f;
@@ -390,7 +460,6 @@ int main(int argc, char** argv) {
     else if (ARG("--dump-start")) H.dump_start = strtoull(next, NULL, 0);
     else if (ARG("--frames")) H.max_frames = strtoull(next, NULL, 0);
     else if (!strcmp(a, "--fullscreen")) fullscreen = 1;
-    else if (!strcmp(a, "--stretch")) H.stretch = 1;
     else if (!strcmp(a, "--vsync")) H.vsync = 1;
     else if (!strcmp(a, "--no-sound")) no_sound = 1;
     else if (!strcmp(a, "--unthrottled")) H.throttle = 0;
@@ -440,7 +509,6 @@ int main(int argc, char** argv) {
     if (vegas_init(disk, nile, sio, sound) != 0) { fprintf(stderr, "cannot open disk image %s\n", disk); return 1; }
   }
   if (load_entry(&ctx, ram, regs) != 0) return 1;
-  widescreen_patch(H.aspect);
 
   if (!SDL_Init(SDL_INIT_VIDEO | (no_sound ? 0 : SDL_INIT_AUDIO))) {
     fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -463,17 +531,18 @@ int main(int argc, char** argv) {
     H.vsync = 0;
     SDL_GL_SetSwapInterval(0); /* paced by the emulated vblank instead */
   }
-  if (scale <= 0) {
-    int pw, ph;
-    SDL_GetWindowSizeInPixels(H.window, &pw, &ph);
-    scale = ph / 384.0f;
-    if (scale < 1) scale = 1;
-  }
-  if (renderer_gl_init(scale, H.aspect, on_frame, NULL) != 0) return 1;
   {
+    float scale;
+    wanted_view(&H.aspect, &scale);
+    if (renderer_gl_init(scale, H.aspect, on_frame, NULL) != 0) return 1;
+    widescreen_patch(H.aspect);
+    update_title(H.aspect);
     int w, h;
     renderer_gl_size(&w, &h);
-    fprintf(stderr, "OpenGL %s; rendering at %dx%d\n", (const char*)glGetString(GL_VERSION), w, h);
+    char name[32];
+    aspect_name(H.aspect, name, sizeof name);
+    fprintf(stderr, "OpenGL %s; rendering at %dx%d (%s%s)\n", (const char*)glGetString(GL_VERSION), w, h,
+            H.aspect_mode > 0 ? "" : "auto ", name);
   }
   if (!no_sound) {
     SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, dcs2_audio_rate()};

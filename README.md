@@ -12,8 +12,8 @@ produced from it on your machine.
 - Native code with no CPU interpreter. Hardware models cover the IDE disk, the I/O ASIC,
   interrupts, timers, NVRAM and the DCS2 sound board.
 - An OpenGL renderer for the Banshee at any resolution.
-- Hor+ widescreen (`--aspect 16:9`, `21:9` or any ratio), with the 2D HUD kept at its original
-  proportions.
+- Hor+ widescreen that matches the window's aspect ratio automatically (up to 32:9), or a fixed
+  ratio (`--aspect 16:9`, `21:9`, any ratio), with the 2D HUD kept at its original proportions.
 - Keyboard controls and up to four gamepads, with analog sticks mapped onto the original
   49-way joysticks.
 - A launcher that turns the ROM set into a standalone install, so players need neither a
@@ -51,14 +51,14 @@ Gamepads are assigned to players 1-4 in the order they are connected.
 |---|---|
 | Esc | quit |
 | F11 or Alt+Enter | toggle fullscreen |
-| F2 | toggle 4:3 / stretched |
+| F2 | cycle aspect ratio: Auto (default), 4:3, 16:10, 16:9, 21:9, 32:9 |
 | - / = | volume down / up |
 | F9 | service credit |
 | F10 | test switch |
 
 ### Options
 ```
-nbashowtime [--aspect 16:9] [--fullscreen] [--window WxH] [--scale S] [--stretch]
+nbashowtime [--aspect auto|16:9] [--fullscreen] [--window WxH] [--scale S]
             [--vsync] [--volume PERCENT] [--no-sound] [--perf]
 ```
 An in-game settings screen is planned.

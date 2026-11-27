@@ -2,7 +2,8 @@
 #ifndef NBA_WIDESCREEN_H
 #define NBA_WIDESCREEN_H
 
-/* Call after the game image is in RAM. aspect = width / height of the rendered view. */
+/* Call after the game image is in RAM. aspect = width / height of the rendered view (at least
+   4:3). May be called again between frames to change it. */
 void widescreen_patch(float aspect);
 
 #endif
