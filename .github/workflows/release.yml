@@ -186,7 +186,13 @@ jobs:
         run: |
           ls -la files
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" files/* --clobber
+            # Add only the files the release doesn't have yet: a file players already
+            # downloaded keeps its checksum.
+            have=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+            for f in files/*; do
+              if grep -qxF "$(basename "$f")" <<< "$have"; then echo "keeping $(basename "$f")"
+              else gh release upload "$TAG" "$f"; fi
+            done
           else
             flags=()
             [ "${{ inputs.prerelease }}" = "true" ] && flags+=(--prerelease)
