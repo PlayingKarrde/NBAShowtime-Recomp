@@ -8,7 +8,7 @@ The game comes in two parts:
 
 | part | contains | where it comes from |
 |---|---|---|
-| **engine** `nbashowtime(.exe)` + SDL3 | runtime (hardware models), renderer, audio, input, future settings screen | shipped prebuilt; nothing from the ROM |
+| **engine** `nbashowtime(.exe)` + SDL3 | runtime (hardware models), renderer, audio, input, in-game menu | shipped prebuilt; nothing from the ROM |
 | **game library** `nbagame.so` / `.dll` / `.dylib` | the recompiled BIOS + game code only | built by the launcher on the player's machine |
 
 The engine loads the library at startup (`src/host/game_loader.c`). Nothing derived from the ROM

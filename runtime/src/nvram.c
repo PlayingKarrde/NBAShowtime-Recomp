@@ -19,24 +19,37 @@ static struct {
 
 static uint8_t bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 
-void nvram_init(const char* path) {
+int nvram_init(const char* path) {
   memset(&nv, 0, sizeof nv);
+  int loaded = 0;
   if (path) {
     snprintf(nv.path, sizeof nv.path, "%s", path);
     FILE* f = fopen(path, "rb");
     if (f) {
-      if (fread(nv.mem, 1, NVRAM_SIZE, f) != NVRAM_SIZE) vegas_log("nvram: short file %s", path);
+      loaded = fread(nv.mem, 1, NVRAM_SIZE, f) == NVRAM_SIZE;
+      if (!loaded) { vegas_log("nvram: short file %s", path); memset(nv.mem, 0, sizeof nv.mem); }
       fclose(f);
     }
   }
+  return loaded;
 }
 
+uint8_t* nvram_mem(void) { return nv.mem; }
+void nvram_touch(void) { nv.dirty = 1; }
+
+/* Written to a temporary file first: a crash mid-write must not lose the old contents. */
 void nvram_save(void) {
   if (!nv.path[0] || !nv.dirty) return;
-  FILE* f = fopen(nv.path, "wb");
-  if (!f) { vegas_log("nvram: cannot write %s", nv.path); return; }
-  fwrite(nv.mem, 1, NVRAM_SIZE, f);
-  fclose(f);
+  char tmp[1100];
+  snprintf(tmp, sizeof tmp, "%s.tmp", nv.path);
+  FILE* f = fopen(tmp, "wb");
+  if (!f) { vegas_log("nvram: cannot write %s", tmp); return; }
+  const int ok = fwrite(nv.mem, 1, NVRAM_SIZE, f) == NVRAM_SIZE;
+  if (fclose(f) != 0 || !ok) { vegas_log("nvram: cannot write %s", tmp); remove(tmp); return; }
+#ifdef _WIN32
+  remove(nv.path); /* rename does not replace an existing file there */
+#endif
+  if (rename(tmp, nv.path) != 0) { vegas_log("nvram: cannot replace %s", nv.path); return; }
   nv.dirty = 0;
 }
 

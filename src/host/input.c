@@ -1,7 +1,7 @@
 // Host input: keyboard and SDL gamepads mapped onto the cabinet's I/O ASIC inputs.
 //
 // Cabinet (per player): 49-way joystick, A, B, Turbo, Start; plus coins, service and test.
-// Keyboard defaults:
+// The bindings live in the settings (settings.c; changed from the in-game menu). Defaults:
 //   P1: arrows, A = Z, B = X, Turbo = C (or Left Shift), Start = 1, Coin = 5
 //   P2: I/J/K/L, A = Q, B = W, Turbo = E, Start = 2, Coin = 6
 //   P3/P4: Start = 3/4, Coin = 7/8 (gamepads only for play)
@@ -17,6 +17,7 @@
 #include <SDL3/SDL.h>
 
 #include "../../runtime/src/ioasic.h"
+#include "settings.h"
 
 /* bit masks (active low in the registers; kept active high here) */
 enum { SYS_COIN1 = 0x1, SYS_COIN2 = 0x2, SYS_START1 = 0x4, SYS_TEST = 0x10, SYS_START2 = 0x20, SYS_SERVICE = 0x40,
@@ -42,6 +43,7 @@ static struct {
   Player kb[4], pad[4];
   Press script[128];
   int nscript;
+  int hold; /* after the menu: ignore buttons until all are released */
 } I;
 
 void input_init(void) {
@@ -85,26 +87,44 @@ void input_event(const SDL_Event* e) {
   else if (e->type == SDL_EVENT_GAMEPAD_REMOVED) close_pad(e->gdevice.which);
 }
 
+static int key_down(const bool* k, const SDL_Scancode* slots) {
+  for (int i = 0; i < KEY_SLOTS; ++i)
+    if (slots[i] && k[slots[i]]) return 1;
+  return 0;
+}
+
 static void read_keyboard(void) {
   const bool* k = SDL_GetKeyboardState(NULL);
-  Player* p1 = &I.kb[0];
-  Player* p2 = &I.kb[1];
-  p1->dx = k[SDL_SCANCODE_RIGHT] - k[SDL_SCANCODE_LEFT];
-  p1->dy = k[SDL_SCANCODE_DOWN] - k[SDL_SCANCODE_UP];
-  p1->buttons = (k[SDL_SCANCODE_Z] ? BTN_A : 0) | (k[SDL_SCANCODE_X] ? BTN_B : 0) |
-                (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_LSHIFT] ? BTN_TURBO : 0);
-  p2->dx = k[SDL_SCANCODE_L] - k[SDL_SCANCODE_J];
-  p2->dy = k[SDL_SCANCODE_K] - k[SDL_SCANCODE_I];
-  p2->buttons = (k[SDL_SCANCODE_Q] ? BTN_A : 0) | (k[SDL_SCANCODE_W] ? BTN_B : 0) | (k[SDL_SCANCODE_E] ? BTN_TURBO : 0);
-  static const SDL_Scancode start[4] = {SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4};
-  static const SDL_Scancode coin[4] = {SDL_SCANCODE_5, SDL_SCANCODE_6, SDL_SCANCODE_7, SDL_SCANCODE_8};
-  for (int i = 0; i < 4; ++i) {
-    I.kb[i].start = k[start[i]];
-    I.kb[i].coin = k[coin[i]];
+  for (int p = 0; p < KB_PLAYERS; ++p) {
+    SDL_Scancode(*b)[KEY_SLOTS] = g_settings.keys[p];
+    Player* pl = &I.kb[p];
+    pl->dx = key_down(k, b[ACT_RIGHT]) - key_down(k, b[ACT_LEFT]);
+    pl->dy = key_down(k, b[ACT_DOWN]) - key_down(k, b[ACT_UP]);
+    pl->buttons = (key_down(k, b[ACT_A]) ? BTN_A : 0) | (key_down(k, b[ACT_B]) ? BTN_B : 0) |
+                  (key_down(k, b[ACT_TURBO]) ? BTN_TURBO : 0);
+    pl->start = key_down(k, b[ACT_START]);
+    pl->coin = key_down(k, b[ACT_COIN]);
+  }
+  static const SDL_Scancode start[2] = {SDL_SCANCODE_3, SDL_SCANCODE_4};
+  static const SDL_Scancode coin[2] = {SDL_SCANCODE_7, SDL_SCANCODE_8};
+  for (int i = 0; i < 2; ++i) {
+    I.kb[2 + i].start = k[start[i]];
+    I.kb[2 + i].coin = k[coin[i]];
   }
 }
 
+/* The gamepad inputs held now, as bits (SDL_GamepadButton values, PAD_LT, PAD_RT). */
+uint32_t input_pad_held(SDL_Gamepad* g) {
+  uint32_t m = 0;
+  for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+    if (SDL_GetGamepadButton(g, (SDL_GamepadButton)b)) m |= 1u << b;
+  if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) m |= 1u << PAD_LT;
+  if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) m |= 1u << PAD_RT;
+  return m;
+}
+
 static void read_pads(void) {
+  const float dz = g_settings.deadzone / 100.0f;
   for (int i = 0; i < 4; ++i) {
     SDL_Gamepad* g = I.pads[i];
     if (!g) continue;
@@ -113,15 +133,12 @@ static void read_pads(void) {
     p->dy = SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_DOWN) - SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_UP);
     p->ax = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
     p->ay = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
-    p->analog = p->ax * p->ax + p->ay * p->ay > 0.2f * 0.2f; /* outside the dead zone */
-    const int trig = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000 ||
-                     SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000;
-    p->buttons = (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_SOUTH) ? BTN_A : 0) |
-                 (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_EAST) ? BTN_B : 0) |
-                 (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_WEST) || SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) ||
-                  SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || trig ? BTN_TURBO : 0);
-    p->start = SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_START);
-    p->coin = SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_BACK);
+    p->analog = p->ax * p->ax + p->ay * p->ay > dz * dz; /* outside the dead zone */
+    const uint32_t held = input_pad_held(g);
+    const uint32_t* m = g_settings.pad;
+    p->buttons = ((held & m[ACT_A]) ? BTN_A : 0) | ((held & m[ACT_B]) ? BTN_B : 0) | ((held & m[ACT_TURBO]) ? BTN_TURBO : 0);
+    p->start = (held & m[ACT_START]) != 0;
+    p->coin = (held & m[ACT_COIN]) != 0;
   }
 }
 
@@ -131,9 +148,20 @@ static int pos49(float v) {
   return p < 0 ? 0 : p > 6 ? 6 : p;
 }
 
+void input_hold_until_released(void) { I.hold = 1; }
+
 void input_update(uint64_t frame) {
   read_keyboard();
   read_pads();
+  if (I.hold) { /* the button that closed the menu must not reach the game */
+    int any = 0;
+    for (int i = 0; i < 4; ++i) {
+      any |= I.kb[i].buttons | I.kb[i].start | I.kb[i].coin | I.pad[i].buttons | I.pad[i].start | I.pad[i].coin;
+      I.kb[i].buttons = I.kb[i].start = I.kb[i].coin = 0;
+      I.pad[i].buttons = I.pad[i].start = I.pad[i].coin = 0;
+    }
+    if (!any) I.hold = 0;
+  }
   uint16_t sys = 0, in1 = 0, in2 = 0;
   for (int i = 0; i < 4; ++i) {
     const Player* k = &I.kb[i];

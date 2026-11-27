@@ -25,7 +25,7 @@ RMS around -40 dBFS before the gain). `--perf` prints once per 60 frames:
 - sound-board traffic and audio level;
 - where game time went (instructions, Count reads, IDE, Banshee, I/O ASIC).
 
-Keys: Esc quits, F11 or Alt+Enter toggles fullscreen, F2 cycles the aspect ratio (Auto, 4:3, 16:10, 16:9, 21:9, 32:9; the
+Keys: Esc (or L3 + R3) opens the menu, F11 or Alt+Enter toggles fullscreen, F2 cycles the aspect ratio (Auto, 4:3, 16:10, 16:9, 21:9, 32:9; the
 window title shows the current one).
 
 | | Player 1 | Player 2 | Players 3/4 |

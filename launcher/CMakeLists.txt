@@ -26,8 +26,8 @@ set(EMBED_FILES "entry_recipe=${BOOT}/entry_recipe.bin|entry_regs=${BOOT}/entry_
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/boot_assets.c
   COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/boot_assets.c "-DFILES=${EMBED_FILES}"
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake ${BOOT}/entry_recipe.bin ${BOOT}/entry_regs.json
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+  DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake ${BOOT}/entry_recipe.bin ${BOOT}/entry_regs.json
           ${BOOT}/entry_nile.bin ${BOOT}/entry_sio.bin
   VERBATIM)
 

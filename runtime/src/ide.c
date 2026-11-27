@@ -1,6 +1,7 @@
 // IDE disk model: ATA task file, PIO, IDENTIFY, bus-master DMA (READ/WRITE DMA).
 // Backed by the game's CHD (MAME compressed hard disk, read with libchdr) or a raw disk image;
-// writes go to an in-memory copy-on-write overlay.
+// writes go to a copy-on-write overlay, which the host can keep in a file (ide_overlay_load /
+// ide_overlay_save): the game stores records on its disk.
 #define _FILE_OFFSET_BITS 64
 #include "ide.h"
 
@@ -41,6 +42,7 @@ static struct {
   uint64_t sectors;
   uint8_t** overlay; /* overlay[page][sector-in-page * 512] (NULL if untouched) */
   uint64_t overlay_pages;
+  int overlay_dirty; /* written since the last ide_overlay_save */
 
   /* task file */
   uint8_t features, error, count, lba0, lba1, lba2, devhead, status, devctl;
@@ -149,7 +151,58 @@ static void write_sector(uint64_t lba, const uint8_t* in) {
   if (!*page) *page = calloc(1, OVERLAY_PAGE * SECTOR + OVERLAY_PAGE);
   memcpy(*page + (lba % OVERLAY_PAGE) * SECTOR, in, SECTOR);
   (*page)[OVERLAY_PAGE * SECTOR + lba % OVERLAY_PAGE] = 1;
+  ide.overlay_dirty = 1;
   g_ide_stats.sectors_written++;
+}
+
+/* Overlay file: "NBADISKW", u32 version 1, u32 count, then count x {u64 lba, 512 bytes}. */
+int ide_overlay_load(const char* path) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return 0;
+  char magic[8];
+  uint32_t hdr[2];
+  int n = 0;
+  if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, "NBADISKW", 8) && fread(hdr, 4, 2, f) == 2 && hdr[0] == 1) {
+    uint8_t sector[SECTOR];
+    uint64_t lba;
+    for (uint32_t i = 0; i < hdr[1]; ++i) {
+      if (fread(&lba, 8, 1, f) != 1 || fread(sector, 1, SECTOR, f) != SECTOR) break;
+      write_sector(lba, sector);
+      ++n;
+    }
+  } else vegas_log("ide: %s is not a disk overlay", path);
+  fclose(f);
+  ide.overlay_dirty = 0;
+  g_ide_stats.sectors_written = 0;
+  return n;
+}
+
+int ide_overlay_save(const char* path) {
+  if (!ide.overlay_dirty) return 0;
+  char tmp[1100];
+  snprintf(tmp, sizeof tmp, "%s.tmp", path);
+  FILE* f = fopen(tmp, "wb");
+  if (!f) { vegas_log("ide: cannot write %s", tmp); return -1; }
+  uint32_t count = 0;
+  for (uint64_t p = 0; p < ide.overlay_pages; ++p)
+    if (ide.overlay[p])
+      for (uint32_t s = 0; s < OVERLAY_PAGE; ++s) count += ide.overlay[p][OVERLAY_PAGE * SECTOR + s] != 0;
+  const uint32_t hdr[2] = {1, count};
+  int ok = fwrite("NBADISKW", 1, 8, f) == 8 && fwrite(hdr, 4, 2, f) == 2;
+  for (uint64_t p = 0; ok && p < ide.overlay_pages; ++p)
+    if (ide.overlay[p])
+      for (uint32_t s = 0; ok && s < OVERLAY_PAGE; ++s)
+        if (ide.overlay[p][OVERLAY_PAGE * SECTOR + s]) {
+          const uint64_t lba = p * OVERLAY_PAGE + s;
+          ok = fwrite(&lba, 8, 1, f) == 1 && fwrite(ide.overlay[p] + s * SECTOR, 1, SECTOR, f) == SECTOR;
+        }
+  if (fclose(f) != 0 || !ok) { vegas_log("ide: cannot write %s", tmp); remove(tmp); return -1; }
+#ifdef _WIN32
+  remove(path);
+#endif
+  if (rename(tmp, path) != 0) { vegas_log("ide: cannot replace %s", path); return -1; }
+  ide.overlay_dirty = 0;
+  return (int)count;
 }
 
 static void put_string(uint16_t* id, int word, int words, const char* s) {

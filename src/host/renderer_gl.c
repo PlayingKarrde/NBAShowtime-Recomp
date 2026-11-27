@@ -531,7 +531,7 @@ int renderer_gl_init(float scale, float aspect, RendererGlFrameFn fn, void* user
 void renderer_gl_size(int* w, int* h) { *w = G.width; *h = G.height; }
 
 /* Draw the displayed buffer into the window's framebuffer (dst rectangle in window pixels). */
-void renderer_gl_present(int win_w, int win_h, int dx, int dy, int dw, int dh) {
+void renderer_gl_present(int win_w, int win_h, int dx, int dy, int dw, int dh, int sharp) {
   Target* c = target(G.col, G.display_addr, 0);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, G.blit_fbo);
   glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c->tex, 0);
@@ -541,9 +541,11 @@ void renderer_gl_present(int win_w, int win_h, int dx, int dy, int dw, int dh) {
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glClearColor(0, 0, 0, 1);
   glClear(GL_COLOR_BUFFER_BIT);
-  glBlitFramebuffer(0, 0, G.width, G.height, dx, win_h - dy - dh, dx + dw, win_h - dy, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  glBlitFramebuffer(0, 0, G.width, G.height, dx, win_h - dy - dh, dx + dw, win_h - dy, GL_COLOR_BUFFER_BIT, sharp ? GL_NEAREST : GL_LINEAR);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
+
+unsigned renderer_gl_display_texture(void) { return target(G.col, G.display_addr, 0)->tex; }
 
 /* Read the displayed buffer back (RGBA8, top row first). */
 void renderer_gl_read_display(uint8_t* rgba) {

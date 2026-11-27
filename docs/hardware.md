@@ -94,8 +94,28 @@ the VRC5074 remaps its windows during BIOS start-up). The registers are 16-bit, 
 | +0x18 | R | IN1, active low: P1 stick bits 0-3, A 0x10, B 0x20, Turbo 0x40; P2 the same << 8 |
 | +0x1A | R | IN2: P3 like P1, P4 like P2; bits 8-11 come from the 49-way joystick adapter |
 | +0x1C | R | SYSTEM: coin 1/2 0x1/0x2, start 1/2 0x4/0x20, tilt 0x8, test 0x10, service 0x40, coin 3/4 0x80/0x100, start 3/4 0x200/0x400, volume -/+ 0x800/0x1000 |
-| +0x1E | R | DIP switches (dumped as BE7E: bit 8 clear = 49-way joysticks) |
-| +0x1E | R | DIP switches (0xBE7E as shipped) |
+| +0x1E | R | DIP switches (0xBE7E as shipped; see below) |
+
+### DIP switches
+Names from MAME (`src/mame/williams/vegas.cpp`). The game reads them as it boots; the engine sets
+them from the Gameplay settings (`settings_dip_switches` in `src/host/settings.c`).
+
+| bits | switch | as shipped (0xBE7E) |
+|---|---|---|
+| 0x0001 | coinage source: 1 = switches, 0 = CMOS | CMOS |
+| 0x000E | coinage: modes 1-7, 0 = free play | mode 1 |
+| 0x0030 | currency: USA / French / German, 0 = free play | USA |
+| 0x0040 | select game (dual-game boards) | yes |
+| 0x0080 | power-up game: NBA Showtime / NFL Blitz | NBA |
+| 0x0100 | joysticks: 1 = 8-way, 0 = 49-way | 49-way |
+| 0x0200 | graphics: 1 = medium res, 0 = low res | medium |
+| 0x2000 | players: 1 = 2, 0 = 4 | 2 |
+| 0x4000 | power-on self test | no |
+| 0x8000 | test switch (0 = on) | off |
+
+Measured in the recomp: free play needs coinage source 1 with both the coinage and the currency
+field at 0 (0x9E41 with 4 players: the attract HUD then shows PRESS START); either field alone
+still shows INSERT COINS. Players = 4 shows four player slots in the HUD.
 
 ### 49-way joysticks
 With DIP bit 8 clear, the stick positions are read through IN2 bits 8-11. The game writes an index

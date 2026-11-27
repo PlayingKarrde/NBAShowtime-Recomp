@@ -66,6 +66,17 @@ settings) storage.
 | 70, 71 | interrupt-safe record ops | 17 / 14 | L |
 | 74, 75 | NVRAM/RTC block access (`0xA4400000`, top at `+0x7FF7`) | 0 | L |
 
+The records live in a RAM copy of NVRAM offsets 0x800-0x7FF0 at `0x8002C508 + offset` (syscall 58
+sets the table up from the game's 0x94-byte layout: audits start at `0x8002CD08`). The BIOS fills
+the copy from the chip at power-on (`0x80008968`) and writes changed bytes back from a dirty map at
+`0x800344F8 + offset` (`0x80008A30`). The boot snapshot starts after power-on, so the engine
+fills the copy itself from the saved `nvram.bin` (`sync_cmos_shadow` in `src/host/main.c`).
+The game also keeps records on its hard disk (about 240 sectors written per session, e.g. the
+power-up count is restored from there at boot); the engine saves those in `disk.bin`.
+
+The test switch makes the game `exec("diag.exe")` (syscall 45): the operator menu is a separate
+program on the disk, not part of the recompiled `GAME.EXE`, so it does not run yet.
+
 ## Sound (DCS2 board ports at 0xA4800000: data +0x10, status +0x14/+0x16)
 | # | name | calls | conf |
 |---|---|---|---|

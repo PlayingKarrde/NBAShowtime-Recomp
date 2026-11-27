@@ -41,7 +41,16 @@ set(RUNTIME_SOURCES runtime/src/recomp_runtime.c runtime/src/vegas_machine.c run
     runtime/src/ioasic.c runtime/src/pci.c runtime/src/banshee.c runtime/src/voodoo3d.c runtime/src/raster_sw.c
     runtime/src/voodoo_tex.c runtime/src/widescreen.c runtime/src/sio.c runtime/src/nvram.c runtime/src/proc.c
     runtime/src/adsp2100.c runtime/src/dcs2.c runtime/src/fpu.c)
-set(HOST_SOURCES src/host/main.c src/host/renderer_gl.c src/host/input.c)
+# The in-game menu's fonts (assets/fonts, made by tools/font/make_menu_font.py), embedded.
+set(MENU_FONT ${CMAKE_SOURCE_DIR}/assets/fonts/menu_font.bin)
+add_custom_command(
+  OUTPUT ${CMAKE_BINARY_DIR}/menu_assets.c
+  COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_BINARY_DIR}/menu_assets.c "-DFILES=menu_font=${MENU_FONT}"
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+  DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake ${MENU_FONT}
+  VERBATIM)
+set(HOST_SOURCES src/host/main.c src/host/renderer_gl.c src/host/input.c src/host/settings.c src/host/menu.c
+    src/host/ui_gl.c ${CMAKE_BINARY_DIR}/menu_assets.c)
 # Guest float semantics: no FMA contraction (R5000 madd.s is unfused), no strict aliasing games.
 set(GAME_CODE_OPTIONS -ffp-contract=off -fno-strict-aliasing -Wno-unused-label -Wno-unused-parameter
     -Wno-tautological-compare) # NaN tests (x != x)

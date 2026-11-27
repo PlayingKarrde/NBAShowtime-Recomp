@@ -19,7 +19,9 @@ int renderer_gl_init(float scale, float aspect, RendererGlFrameFn fn, void* user
    Returns 1 if anything changed. */
 int renderer_gl_set_view(float scale, float aspect);
 void renderer_gl_size(int* w, int* h);
-void renderer_gl_present(int win_w, int win_h, int dx, int dy, int dw, int dh);
+/* sharp: nearest-neighbour scaling instead of bilinear */
+void renderer_gl_present(int win_w, int win_h, int dx, int dy, int dw, int dh, int sharp);
+unsigned renderer_gl_display_texture(void); /* GL texture of the displayed buffer (renderer_gl_size) */
 void renderer_gl_read_display(uint8_t* rgba); /* width*height*4, top row first */
 RendererGlStats* renderer_gl_stats(void);
 

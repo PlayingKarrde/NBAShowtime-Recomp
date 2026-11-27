@@ -15,6 +15,10 @@ int ide_init(const char* image_path);
 int ide_handles(uint32_t phys);
 uint32_t ide_read(uint32_t phys, int size);
 void ide_write(RecompContext* ctx, uint32_t phys, uint32_t value, int size);
+/* Sectors the game wrote, kept in a file: load before the game runs (returns the sector count);
+   save writes the file if anything changed since (returns the count, 0 = unchanged, -1 = error). */
+int ide_overlay_load(const char* path);
+int ide_overlay_save(const char* path);
 
 /* Statistics for diagnostics. */
 typedef struct {
